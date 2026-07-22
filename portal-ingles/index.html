@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#173f3a" />
+  <title>Inglês no Ritmo — Portal do Marcelo</title>
+  <meta name="description" content="Estudo de inglês em 30 minutos por dia, com foco em audição e progresso adaptativo." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Literata:opsz,wght@7..72,600;7..72,700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#hoje"><span class="brand-mark">IR</span><span>Inglês no Ritmo</span></a>
+    <nav aria-label="Navegação principal">
+      <button class="nav-link active" data-view="hoje">Hoje</button>
+      <button class="nav-link" data-view="semana">Minha semana</button>
+      <button class="nav-link" data-view="progresso">Progresso</button>
+    </nav>
+    <button class="icon-button" id="backupButton" title="Exportar backup" aria-label="Exportar backup">↓</button>
+  </header>
+
+  <main>
+    <section id="hoje" class="view active" aria-labelledby="todayTitle">
+      <div class="welcome-row">
+        <div><p class="eyebrow">SEMANA 1 · A1 ACELERADO</p><h1 id="todayTitle">Olá, Marcelo. Vamos ouvir?</h1><p class="subtitle">Uma aula por vez. Sem pressa, sem exposição.</p></div>
+        <div class="streak"><strong id="streakValue">0</strong><span>dias estudados</span></div>
+      </div>
+      <div class="progress-line"><span id="progressFill"></span></div>
+      <p class="progress-copy"><span id="progressText">0 de 7 aulas concluídas</span><strong>Meta: 30 min</strong></p>
+
+      <article class="lesson-card" id="lessonCard"></article>
+    </section>
+
+    <section id="semana" class="view" aria-labelledby="weekTitle">
+      <p class="eyebrow">SEU PLANO</p><h1 id="weekTitle">Semana 1</h1>
+      <p class="subtitle">Ouvir para entender o contexto</p>
+      <div class="week-grid" id="weekGrid"></div>
+      <article class="assessment-card" id="assessmentCard"></article>
+    </section>
+
+    <section id="progresso" class="view" aria-labelledby="progressTitle">
+      <p class="eyebrow">JORNADA ATÉ O C1</p><h1 id="progressTitle">Seu progresso</h1>
+      <div class="stats-grid">
+        <article><span>Aulas concluídas</span><strong id="completedStat">0</strong></article>
+        <article><span>Tempo estudado</span><strong id="minutesStat">0 min</strong></article>
+        <article><span>Precisão</span><strong id="accuracyStat">—</strong></article>
+      </div>
+      <article class="roadmap">
+        <div class="roadmap-head"><div><p class="eyebrow">NÍVEL ATUAL</p><h2>A1 consolidando</h2></div><span>Meta: C1 em 3 anos</span></div>
+        <div class="levels"><div class="level current">A1</div><div class="level">A2</div><div class="level">B1</div><div class="level">B2</div><div class="level">C1</div></div>
+        <p id="adaptiveMessage">Conclua a primeira semana para receber uma recomendação adaptativa.</p>
+      </article>
+      <div class="data-actions"><button class="secondary" id="exportButton">Exportar progresso</button><label class="secondary file-label">Restaurar backup<input id="importInput" type="file" accept="application/json"></label><button class="text-button danger" id="resetButton">Recomeçar</button></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
