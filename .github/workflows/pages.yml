@@ -22,7 +22,7 @@ jobs:
       - name: Preparar site estático
         run: |
           mkdir _site
-          cp portal-ingles/index.html portal-ingles/styles.css portal-ingles/app.js portal-ingles/.nojekyll _site/
+          cp portal-ingles/index.html portal-ingles/styles.css portal-ingles/app.js portal-ingles/sw.js portal-ingles/manifest.webmanifest portal-ingles/icon-192.png portal-ingles/icon-512.png portal-ingles/.nojekyll _site/
       - uses: actions/upload-pages-artifact@v4
         with:
           path: _site

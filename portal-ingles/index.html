@@ -4,12 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#173f3a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <title>Inglês no Ritmo — Portal do Marcelo</title>
   <meta name="description" content="Estudo de inglês em 30 minutos por dia, com foco em audição e progresso adaptativo." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Literata:opsz,wght@7..72,600;7..72,700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
+  <link rel="manifest" href="manifest.webmanifest" />
 </head>
 <body>
   <header class="topbar">
@@ -19,6 +22,7 @@
       <button class="nav-link" data-view="semana">Minha semana</button>
       <button class="nav-link" data-view="progresso">Progresso</button>
     </nav>
+    <button class="install-button" id="installButton" hidden>Instalar</button>
     <button class="icon-button" id="backupButton" title="Exportar backup" aria-label="Exportar backup">↓</button>
   </header>
 
@@ -32,6 +36,7 @@
       <p class="progress-copy"><span id="progressText">0 de 7 aulas concluídas</span><strong>Meta: 30 min</strong></p>
 
       <article class="lesson-card" id="lessonCard"></article>
+      <p class="transport-note">No transporte, a interface, estruturas e exercícios funcionam offline. Os vídeos do YouTube precisam de conexão.</p>
     </section>
 
     <section id="semana" class="view" aria-labelledby="weekTitle">
