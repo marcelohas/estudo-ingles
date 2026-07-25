@@ -154,6 +154,31 @@ function lessonReportMarkup(report) {
   </div>`;
 }
 
+function youtubeEmbedUrl(videoId, captions) {
+  const params = new URLSearchParams({
+    rel: "0",
+    cc_load_policy: captions ? "1" : "0",
+    cc_lang_pref: "en",
+    hl: "en",
+  });
+  return `https://www.youtube-nocookie.com/embed/${videoId}?${params}`;
+}
+
+function setListeningPass(mode, lessonItem) {
+  const captions = mode === "captions";
+  const iframe = document.querySelector("#lessonVideo");
+  iframe.src = youtubeEmbedUrl(lessonItem.videoId, captions);
+  document.querySelectorAll(".listen-mode").forEach((button) => {
+    const active = button.dataset.mode === mode;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+  const status = document.querySelector("#listeningModeStatus");
+  status.textContent = captions
+    ? "2ª escuta preparada com legenda em inglês."
+    : "1ª escuta preparada sem legenda.";
+}
+
 function needsCurrentAdaptation() {
   return state.week > 1 && !state.generatedWeeks[state.week] && weekCompleted(state.week - 1);
 }
@@ -196,9 +221,13 @@ function renderLesson(){
     <div class="lesson-head"><div><span class="lesson-number">SEMANA ${state.week} · DIA ${l.day} DE 7</span><h2>${l.title}</h2><p>${l.goal}</p></div><span class="time-badge">◷ 30 minutos</span></div>
     ${needsCurrentAdaptation()?`<div class="adaptive-warning"><div><strong>Esta semana ainda usa o plano básico antigo.</strong><span>Gere uma versão personalizada usando seu desempenho da semana anterior.</span></div><button type="button" class="primary" id="adaptCurrentWeek">Adaptar esta semana com IA</button></div>`:""}
     <div class="lesson-body"><div class="media-panel">
-      <div class="video-frame online-only"><iframe src="https://www.youtube-nocookie.com/embed/${l.videoId}?rel=0" title="Vídeo: ${l.title}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
+      <div class="video-frame online-only"><iframe id="lessonVideo" src="${youtubeEmbedUrl(l.videoId, false)}" title="Vídeo: ${l.title}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
       <div class="offline-note">Sem conexão: revise a estrutura e faça os exercícios. O vídeo ficará disponível quando a internet voltar.</div>
-      <p class="listen-tip"><strong>1ª vez:</strong> sem legenda · <strong>2ª vez:</strong> legenda em inglês</p>
+      <div class="listen-controls online-only" aria-label="Escolha a etapa da escuta">
+        <button type="button" class="listen-mode active" data-mode="no-captions" aria-pressed="true"><strong>1ª escuta</strong><span>Sem legenda</span></button>
+        <button type="button" class="listen-mode" data-mode="captions" aria-pressed="false"><strong>2ª escuta</strong><span>Legenda em inglês</span></button>
+      </div>
+      <p class="listen-tip" id="listeningModeStatus" aria-live="polite">1ª escuta preparada sem legenda.</p>
       <div class="structure"><strong>Estrutura do dia</strong><br>${l.structure}</div>
     </div><form class="exercise-panel" id="quizForm"><h3>Verifique sua compreensão</h3>
       ${l.qs.map((question,i)=>`<div class="question"><p>${i+1}. ${question.text}</p>${question.options.map((o,j)=>`<label class="option"><input type="radio" name="q${i}" value="${j}" ${state.answers[id]?.[i]==j?"checked":""}> ${o}</label>`).join("")}</div>`).join("")}
@@ -217,6 +246,9 @@ function renderLesson(){
     </form></div>`;
   document.querySelector("#quizForm").onsubmit=e=>finishLesson(e,l,id);
   document.querySelector("#whatsapp").onclick=()=>shareLesson(l);
+  document.querySelectorAll(".listen-mode").forEach((button) => {
+    button.onclick = () => setListeningPass(button.dataset.mode, l);
+  });
   const adaptButton = document.querySelector("#adaptCurrentWeek");
   if (adaptButton) adaptButton.onclick = regenerateCurrentWeek;
 
