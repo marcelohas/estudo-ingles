@@ -60,10 +60,22 @@
         <article><span>Precisão</span><strong id="accuracyStat">—</strong></article>
       </div>
       <article class="roadmap">
-        <div class="roadmap-head"><div><p class="eyebrow">NÍVEL ATUAL</p><h2>A1 consolidando</h2></div><span>Meta: C1 em 3 anos</span></div>
+        <div class="roadmap-head"><div><p class="eyebrow">NÍVEL ATUAL</p><h2 id="currentLevel">A1 consolidando</h2></div><span>Meta: C1 em 3 anos</span></div>
         <div class="levels"><div class="level current">A1</div><div class="level">A2</div><div class="level">B1</div><div class="level">B2</div><div class="level">C1</div></div>
         <p id="adaptiveMessage">Conclua a primeira semana para receber uma recomendação adaptativa.</p>
       </article>
+      <section class="progress-details" aria-labelledby="skillsTitle">
+        <div>
+          <p class="eyebrow">DESEMPENHO</p>
+          <h2 id="skillsTitle">Competências medidas</h2>
+          <div class="skill-grid" id="skillGrid"></div>
+        </div>
+        <div>
+          <p class="eyebrow">RELATÓRIOS</p>
+          <h2>Últimas conclusões</h2>
+          <div class="reports-list" id="reportsList"></div>
+        </div>
+      </section>
       <div class="data-actions"><button class="secondary" id="exportButton">Exportar progresso</button><label class="secondary file-label">Restaurar backup<input id="importInput" type="file" accept="application/json"></label><button class="text-button danger" id="resetButton">Recomeçar</button></div>
     </section>
   </main>
