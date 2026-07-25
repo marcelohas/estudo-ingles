@@ -2,12 +2,13 @@ import {
   askTutor,
   currentUser,
   enterWithGoogle,
+  generateAdaptiveWeek,
   isGoogleConfigured,
   leaveAccount,
   observeUser,
 } from "./google-gemini-client.js";
 
-const weeks = [
+const initialWeeks = [
   {
     title: "Ouvir para entender o contexto",
     lessons: [
@@ -46,7 +47,7 @@ const weeks = [
   }
 ];
 
-function q(text, options, answer){ return {text,options,answer}; }
+function q(text, options, answer, skill){ return {text,options,answer,skill}; }
 function lesson(day,title,goal,videoId,structure,...qs){ return {day,title,goal,videoId,structure,qs}; }
 function simple(day,title,videoId,structure){
   return lesson(day,title,`Compreender ${title.toLowerCase()} em uma conversa curta.`,videoId,structure,
@@ -55,15 +56,134 @@ function simple(day,title,videoId,structure){
     q("O que deve ser repetido em voz alta?",["Uma frase útil","Todo o vídeo de memória","Somente palavras em português"],0));
 }
 
-const blank = {week:1,day:1,completed:[],answers:{},scores:{},minutes:0,evaluations:{},confidence:{},chatHistory:{}};
+const curatedVideos = initialWeeks.flatMap((week) =>
+  week.lessons.map((item) => item.videoId)
+);
+const skillLabels = {
+  listening: "Compreensão",
+  vocabulary: "Vocabulário",
+  grammar: "Gramática",
+};
+const blank = {
+  week: 1,
+  day: 1,
+  completed: [],
+  answers: {},
+  scores: {},
+  minutes: 0,
+  evaluations: {},
+  confidence: {},
+  chatHistory: {},
+  generatedWeeks: {},
+  lessonReports: {},
+  weeklyReports: {},
+  skillStats: {
+    listening: { correct: 0, total: 0 },
+    vocabulary: { correct: 0, total: 0 },
+    grammar: { correct: 0, total: 0 },
+  },
+  currentLevel: "A1",
+  startedAt: new Date().toISOString(),
+};
 let stored = JSON.parse(localStorage.getItem("inglesNoRitmo")||"{}");
-let state = {...blank,...stored};
+let state = {
+  ...blank,
+  ...stored,
+  generatedWeeks: stored.generatedWeeks || {},
+  lessonReports: stored.lessonReports || {},
+  weeklyReports: stored.weeklyReports || {},
+  skillStats: {...blank.skillStats, ...(stored.skillStats || {})},
+};
 if(!state.week) state.week=1;
 const key=(w,d)=>`${w}-${d}`;
 const save=()=>localStorage.setItem("inglesNoRitmo",JSON.stringify(state));
-const currentWeek=()=>weeks[Math.min(state.week,weeks.length)-1];
+const weekAt=(number)=>state.generatedWeeks[number]||initialWeeks[number-1];
+const currentWeek=()=>weekAt(state.week);
 const currentLesson=()=>currentWeek().lessons[state.day-1];
 function toast(text){const el=document.querySelector("#toast");el.textContent=text;el.classList.add("show");setTimeout(()=>el.classList.remove("show"),2400)}
+
+function questionSkill(question, index) {
+  return question.skill || ["listening", "vocabulary", "grammar"][index] || "grammar";
+}
+
+function percent(correct, total) {
+  return total ? Math.round((correct / total) * 100) : 0;
+}
+
+function performanceBand(value) {
+  if (value >= 85) return "domínio forte";
+  if (value >= 70) return "bom progresso";
+  if (value >= 50) return "em consolidação";
+  return "precisa de reforço";
+}
+
+function buildLessonReport(lesson, id, answers, confidence) {
+  const bySkill = {};
+  lesson.qs.forEach((question, index) => {
+    const skill = questionSkill(question, index);
+    bySkill[skill] = bySkill[skill] || { correct: 0, total: 0 };
+    bySkill[skill].total += 1;
+    if (answers[index] === question.answer) bySkill[skill].correct += 1;
+  });
+  const correct = lesson.qs.filter((question, index) => answers[index] === question.answer).length;
+  const accuracy = percent(correct, lesson.qs.length);
+  const weakest = Object.entries(bySkill)
+    .sort(([, a], [, b]) => percent(a.correct, a.total) - percent(b.correct, b.total))[0]?.[0];
+  const recommendation = accuracy >= 85 && confidence >= 2
+    ? "Avance mantendo uma revisão curta desta estrutura."
+    : `Revise ${skillLabels[weakest]?.toLowerCase() || "o conteúdo"} antes da próxima aula.`;
+  return {
+    lessonId: id,
+    title: lesson.title,
+    accuracy,
+    correct,
+    total: lesson.qs.length,
+    confidence,
+    bySkill,
+    recommendation,
+    completedAt: new Date().toISOString(),
+  };
+}
+
+function lessonReportMarkup(report) {
+  if (!report) return "";
+  return `<div class="lesson-report">
+    <strong>Relatório da aula</strong>
+    <p>${report.accuracy}% de acerto · ${performanceBand(report.accuracy)} · confiança ${report.confidence}/3.</p>
+    <p>${report.recommendation}</p>
+  </div>`;
+}
+
+function rebuildDerivedReports() {
+  let changed = false;
+  state.completed.forEach((lessonId) => {
+    if (state.lessonReports[lessonId] || !state.answers[lessonId]) return;
+    const [weekNumber, dayNumber] = lessonId.split("-").map(Number);
+    const plan = weekAt(weekNumber);
+    const lessonItem = plan?.lessons?.find((item) => item.day === dayNumber);
+    if (!lessonItem) return;
+    state.lessonReports[lessonId] = buildLessonReport(
+      lessonItem,
+      lessonId,
+      state.answers[lessonId],
+      state.confidence[lessonId] || 2,
+    );
+    changed = true;
+  });
+  state.skillStats = {
+    listening: { correct: 0, total: 0 },
+    vocabulary: { correct: 0, total: 0 },
+    grammar: { correct: 0, total: 0 },
+  };
+  Object.values(state.lessonReports).forEach((report) => {
+    Object.entries(report.bySkill || {}).forEach(([skill, result]) => {
+      state.skillStats[skill] = state.skillStats[skill] || { correct: 0, total: 0 };
+      state.skillStats[skill].correct += result.correct;
+      state.skillStats[skill].total += result.total;
+    });
+  });
+  if (changed) save();
+}
 
 function renderLesson(){
   const l=currentLesson(), id=key(state.week,l.day), done=state.completed.includes(id);
@@ -78,7 +198,7 @@ function renderLesson(){
     </div><form class="exercise-panel" id="quizForm"><h3>Verifique sua compreensão</h3>
       ${l.qs.map((question,i)=>`<div class="question"><p>${i+1}. ${question.text}</p>${question.options.map((o,j)=>`<label class="option"><input type="radio" name="q${i}" value="${j}" ${state.answers[id]?.[i]==j?"checked":""}> ${o}</label>`).join("")}</div>`).join("")}
       <div class="confidence"><label>Como foi a audição hoje? <select id="confidence"><option value="">Escolha</option><option value="1">Difícil</option><option value="2">Razoável</option><option value="3">Boa</option></select></label></div>
-      <div class="feedback ${done?"show":""}">${done?`Aula concluída · ${state.scores[id]}/${l.qs.length} respostas corretas.`:""}</div>
+      <div class="feedback ${done?"show":""}">${done?lessonReportMarkup(state.lessonReports[id]):""}</div>
       <div class="actions"><button type="submit" class="primary">${done?"Atualizar respostas":"Concluir aula"}</button><button type="button" class="primary whatsapp" id="whatsapp">Enviar pelo WhatsApp</button></div>
 
       <button type="button" class="secondary chat-toggle" id="chatToggle" style="margin-top:24px">💬 Tirar dúvida com a IA</button>
@@ -228,12 +348,26 @@ observeUser((user) => {
       ? "Pergunte sobre a aula..."
       : "Conecte sua conta Google para usar o tutor";
   }
+  if (document.querySelector("#assessmentCard")?.children.length) renderWeek();
 });
 
 function finishLesson(e,l,id){
   e.preventDefault();const data=new FormData(e.target),ans=l.qs.map((_,i)=>Number(data.get(`q${i}`))),confidence=Number(document.querySelector("#confidence").value);
   if(ans.some(Number.isNaN)||!confidence){toast("Responda às questões e avalie a audição.");return}
-  state.answers[id]=ans;state.scores[id]=ans.filter((a,i)=>a===l.qs[i].answer).length;state.confidence[id]=confidence;
+  const previousReport = state.lessonReports[id];
+  if (previousReport) {
+    Object.entries(previousReport.bySkill || {}).forEach(([skill, result]) => {
+      state.skillStats[skill].correct -= result.correct;
+      state.skillStats[skill].total -= result.total;
+    });
+  }
+  const report = buildLessonReport(l, id, ans, confidence);
+  Object.entries(report.bySkill).forEach(([skill, result]) => {
+    state.skillStats[skill] = state.skillStats[skill] || { correct: 0, total: 0 };
+    state.skillStats[skill].correct += result.correct;
+    state.skillStats[skill].total += result.total;
+  });
+  state.answers[id]=ans;state.scores[id]=report.correct;state.confidence[id]=confidence;state.lessonReports[id]=report;
   if(!state.completed.includes(id)){state.completed.push(id);state.minutes+=30}
   if(l.day<7) state.day=l.day+1;save();renderAll();toast("Aula concluída. Progresso salvo!");
 }
@@ -243,36 +377,220 @@ function shareLesson(l){
   window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`,"_blank","noopener");
 }
 
-function weekCompleted(w){return weeks[w-1].lessons.every(l=>state.completed.includes(key(w,l.day)))}
+function weekCompleted(w){return weekAt(w).lessons.every(l=>state.completed.includes(key(w,l.day)))}
 function renderWeek(){
   const w=currentWeek();document.querySelector("#weekTitle").textContent=`Semana ${state.week}`;document.querySelector("#weekGrid").innerHTML=w.lessons.map(l=>{const done=state.completed.includes(key(state.week,l.day));return `<article class="day-card ${done?"done":""}" data-day="${l.day}"><strong>${done?"✓ ":""}Dia ${l.day}</strong><span>${l.title}</span></article>`}).join("");
+  document.querySelector("#semana .subtitle").textContent = `${w.title} · ${w.level || state.currentLevel}`;
   document.querySelectorAll(".day-card").forEach(c=>c.onclick=()=>{state.day=Number(c.dataset.day);save();switchView("hoje")});
   const unlocked=weekCompleted(state.week), evaluated=Boolean(state.evaluations[state.week]);
   document.querySelector("#assessmentCard").className=`assessment-card ${unlocked?"":"locked"}`;
-  document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">AVALIAÇÃO SEMANAL</p><h2>${evaluated?"Semana avaliada":unlocked?"Pronto para avaliar":"Conclua as sete aulas"}</h2><p>${evaluated?state.evaluations[state.week].message:unlocked?"O sistema analisará acertos e confiança auditiva para montar a próxima semana.":`${7-w.lessons.filter(l=>state.completed.includes(key(state.week,l.day))).length} aula(s) restante(s).`}</p>${unlocked&&!evaluated?`<div class="actions"><button class="primary" id="evaluate">Gerar próxima semana</button></div>`:""}`;
+  const report = state.weeklyReports[state.week];
+  const authMessage = currentUser()
+    ? "A IA analisará seus acertos, confiança e competências para criar a próxima semana."
+    : "Conecte sua conta Google para a IA criar a próxima semana.";
+  document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">AVALIAÇÃO SEMANAL</p><h2>${evaluated?"Semana avaliada":unlocked?"Pronto para adaptar":"Conclua as sete aulas"}</h2><p>${report?`${report.accuracy}% de acerto · ${report.summary}`:unlocked?authMessage:`${7-w.lessons.filter(l=>state.completed.includes(key(state.week,l.day))).length} aula(s) restante(s).`}</p>${unlocked&&!evaluated?`<div class="actions"><button class="primary" id="evaluate">${currentUser()?"Analisar e gerar próxima semana":"Conectar Google para continuar"}</button></div>`:""}`;
   if(unlocked&&!evaluated) document.querySelector("#evaluate").onclick=evaluateWeek;
 }
 
-function evaluateWeek(){
-  const w=state.week, ids=weeks[w-1].lessons.map(l=>key(w,l.day)),correct=ids.reduce((n,id)=>n+(state.scores[id]||0),0),total=ids.length*3,pct=Math.round(correct/total*100),avg=ids.reduce((n,id)=>n+(state.confidence[id]||0),0)/ids.length;
-  const support=pct<80||avg<2;const message=`Resultado: ${pct}% · Audição: ${avg.toFixed(1)}/3. ${support?"A próxima semana terá revisão reforçada.":"Você pode avançar com mais desafio auditivo."}`;
-  state.evaluations[w]={pct,avg,support,message};
-  if(w<weeks.length){state.week=w+1;state.day=1;toast(`Semana ${state.week} liberada!`)}else{toast("Ciclo de três semanas concluído. Hora de reavaliar o ritmo.")}
-  save();renderAll();
+function buildWeeklyReport(weekNumber) {
+  const reports = weekAt(weekNumber).lessons
+    .map((item) => state.lessonReports[key(weekNumber, item.day)])
+    .filter(Boolean);
+  const correct = reports.reduce((sum, report) => sum + report.correct, 0);
+  const total = reports.reduce((sum, report) => sum + report.total, 0);
+  const bySkill = {};
+  reports.forEach((report) => {
+    Object.entries(report.bySkill || {}).forEach(([skill, result]) => {
+      bySkill[skill] = bySkill[skill] || { correct: 0, total: 0 };
+      bySkill[skill].correct += result.correct;
+      bySkill[skill].total += result.total;
+    });
+  });
+  const weakestSkill = Object.entries(bySkill)
+    .sort(([, a], [, b]) => percent(a.correct, a.total) - percent(b.correct, b.total))[0]?.[0] || "listening";
+  const strongestSkill = Object.entries(bySkill)
+    .sort(([, a], [, b]) => percent(b.correct, b.total) - percent(a.correct, a.total))[0]?.[0] || "grammar";
+  const accuracy = percent(correct, total);
+  const averageConfidence = reports.reduce((sum, report) => sum + report.confidence, 0) / Math.max(reports.length, 1);
+  const summary = accuracy >= 85 && averageConfidence >= 2
+    ? `Bom domínio. A próxima semana avançará gradualmente, preservando revisão de ${skillLabels[weakestSkill].toLowerCase()}.`
+    : `A próxima semana reforçará ${skillLabels[weakestSkill].toLowerCase()} antes de aumentar a dificuldade.`;
+  return {
+    week: weekNumber,
+    accuracy,
+    averageConfidence: Number(averageConfidence.toFixed(1)),
+    bySkill,
+    weakestSkill,
+    strongestSkill,
+    summary,
+    completedAt: new Date().toISOString(),
+  };
+}
+
+function levelForJourney(nextWeek, accuracy) {
+  const gates = [
+    { week: 120, level: "C1" },
+    { week: 72, level: "B2" },
+    { week: 36, level: "B1" },
+    { week: 12, level: "A2" },
+  ];
+  const planned = gates.find((gate) => nextWeek >= gate.week)?.level || "A1";
+  if (accuracy < 65) return state.currentLevel;
+  return planned;
+}
+
+function adaptiveSummary(report) {
+  return {
+    previousWeek: report.week,
+    accuracy: report.accuracy,
+    averageConfidence: report.averageConfidence,
+    skills: Object.fromEntries(
+      Object.entries(report.bySkill).map(([skill, result]) => [
+        skill,
+        percent(result.correct, result.total),
+      ])
+    ),
+    weakestSkill: report.weakestSkill,
+    strongestSkill: report.strongestSkill,
+    recentLessonReports: weekAt(report.week).lessons.map((lessonItem) => {
+      const item = state.lessonReports[key(report.week, lessonItem.day)];
+      return {
+        title: lessonItem.title,
+        accuracy: item?.accuracy || 0,
+        confidence: item?.confidence || 0,
+        recommendation: item?.recommendation || "",
+      };
+    }),
+    weeksCompleted: Object.keys(state.weeklyReports).length + 1,
+    target: "C1 em 156 semanas (3 anos)",
+  };
+}
+
+function sanitizeGeneratedWeek(raw, weekNumber, level) {
+  if (!raw || !Array.isArray(raw.lessons) || raw.lessons.length !== 7) {
+    throw new Error("INVALID_WEEK_RESPONSE");
+  }
+  const allowedSkills = ["listening", "vocabulary", "grammar"];
+  const lessons = raw.lessons.map((item, lessonIndex) => {
+    if (!Array.isArray(item.questions) || item.questions.length !== 3) {
+      throw new Error("INVALID_WEEK_RESPONSE");
+    }
+    const questions = item.questions.map((question, questionIndex) => {
+      const options = Array.isArray(question.options)
+        ? question.options.map((option) => String(option).slice(0, 180)).slice(0, 3)
+        : [];
+      const answer = Number(question.answer);
+      if (options.length !== 3 || !Number.isInteger(answer) || answer < 0 || answer > 2) {
+        throw new Error("INVALID_WEEK_RESPONSE");
+      }
+      return q(
+        String(question.text || "Escolha a melhor resposta.").slice(0, 300),
+        options,
+        answer,
+        allowedSkills.includes(question.skill) ? question.skill : allowedSkills[questionIndex],
+      );
+    });
+    return lesson(
+      lessonIndex + 1,
+      String(item.title || `Prática ${lessonIndex + 1}`).slice(0, 90),
+      String(item.goal || "Praticar inglês em contexto.").slice(0, 220),
+      curatedVideos[((weekNumber - 1) * 7 + lessonIndex) % curatedVideos.length],
+      String(item.structure || "Revise a estrutura em contexto.").slice(0, 350),
+      ...questions,
+    );
+  });
+  return {
+    title: String(raw.title || `Semana adaptativa ${weekNumber}`).slice(0, 100),
+    level,
+    rationale: String(raw.rationale || "Semana adaptada ao desempenho recente.").slice(0, 400),
+    generatedByAI: true,
+    generatedAt: new Date().toISOString(),
+    lessons,
+  };
+}
+
+async function evaluateWeek() {
+  if (!currentUser()) {
+    try {
+      await enterWithGoogle();
+    } catch (error) {
+      console.error(error);
+      toast("Conecte sua conta Google para gerar a próxima semana.");
+      return;
+    }
+  }
+  const button = document.querySelector("#evaluate");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Analisando evolução...";
+  }
+  const weekNumber = state.week;
+  const report = buildWeeklyReport(weekNumber);
+  const nextWeek = weekNumber + 1;
+  const nextLevel = levelForJourney(nextWeek, report.accuracy);
+  try {
+    const generated = await generateAdaptiveWeek({
+      weekNumber: nextWeek,
+      level: nextLevel,
+      summary: adaptiveSummary(report),
+    });
+    const nextPlan = sanitizeGeneratedWeek(generated, nextWeek, nextLevel);
+    state.weeklyReports[weekNumber] = report;
+    state.evaluations[weekNumber] = {
+      pct: report.accuracy,
+      avg: report.averageConfidence,
+      support: report.accuracy < 80 || report.averageConfidence < 2,
+      message: report.summary,
+    };
+    state.generatedWeeks[nextWeek] = nextPlan;
+    state.currentLevel = nextLevel;
+    state.week = nextWeek;
+    state.day = 1;
+    save();
+    renderAll();
+    switchView("progresso");
+    toast(`Semana ${nextWeek} criada pela IA!`);
+  } catch (error) {
+    console.error(error);
+    if (error.message === "AUTH_REQUIRED" || error.message === "AUTH_EXPIRED") {
+      toast("Sua sessão expirou. Conecte o Google e tente novamente.");
+    } else {
+      toast("A IA não conseguiu criar a semana. Seu progresso foi preservado.");
+    }
+    renderWeek();
+  }
 }
 
 function renderStats(){
   const answered=Object.values(state.answers).reduce((n,a)=>n+a.length,0),correct=Object.values(state.scores).reduce((a,b)=>a+b,0);
   document.querySelector("#completedStat").textContent=state.completed.length;document.querySelector("#minutesStat").textContent=`${state.minutes} min`;document.querySelector("#accuracyStat").textContent=answered?`${Math.round(correct/answered*100)}%`:"—";
-  const last=state.evaluations[Math.max(1,state.week-1)];document.querySelector("#adaptiveMessage").textContent=last?.message||"Conclua a primeira semana para receber uma recomendação adaptativa.";
+  const last=state.weeklyReports[Math.max(1,state.week-1)];
+  document.querySelector("#adaptiveMessage").textContent=last
+    ? `${last.summary} Trajetória: semana ${state.week} de 156.`
+    : "Conclua a primeira semana para receber uma recomendação adaptativa.";
+  document.querySelector("#currentLevel").textContent=`${state.currentLevel} em desenvolvimento`;
+  document.querySelectorAll(".levels .level").forEach((element) => {
+    element.classList.toggle("current", element.textContent === state.currentLevel);
+  });
+  document.querySelector("#skillGrid").innerHTML = Object.entries(skillLabels).map(([skill, label]) => {
+    const result = state.skillStats[skill] || { correct: 0, total: 0 };
+    const value = percent(result.correct, result.total);
+    return `<article><span>${label}</span><strong>${result.total ? `${value}%` : "—"}</strong><small>${result.total ? performanceBand(value) : "Ainda sem dados"}</small></article>`;
+  }).join("");
+  const weekly = Object.values(state.weeklyReports).sort((a,b)=>b.week-a.week).slice(0,3);
+  const lessons = Object.values(state.lessonReports).sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt)).slice(0,4);
+  document.querySelector("#reportsList").innerHTML = [
+    ...weekly.map((report) => `<article class="report-item weekly"><strong>Semana ${report.week}</strong><span>${report.accuracy}% · ${report.summary}</span></article>`),
+    ...lessons.map((report) => `<article class="report-item"><strong>${report.title}</strong><span>${report.accuracy}% · ${report.recommendation}</span></article>`),
+  ].join("") || `<p class="empty-state">Os relatórios aparecerão após a primeira aula concluída.</p>`;
 }
-function renderAll(){const done=currentWeek().lessons.filter(l=>state.completed.includes(key(state.week,l.day))).length;document.querySelector("#streakValue").textContent=state.completed.length;document.querySelector("#progressFill").style.width=`${done/7*100}%`;document.querySelector("#progressText").textContent=`${done} de 7 aulas concluídas`;document.querySelector(".eyebrow").textContent=`SEMANA ${state.week} · A1 ACELERADO`;renderLesson();renderWeek();renderStats()}
+function renderAll(){const done=currentWeek().lessons.filter(l=>state.completed.includes(key(state.week,l.day))).length;document.querySelector("#streakValue").textContent=state.completed.length;document.querySelector("#progressFill").style.width=`${done/7*100}%`;document.querySelector("#progressText").textContent=`${done} de 7 aulas concluídas`;document.querySelector("#hoje .eyebrow").textContent=`SEMANA ${state.week} · ${state.currentLevel} · META C1`;renderLesson();renderWeek();renderStats()}
 function switchView(id){document.querySelectorAll(".view,.nav-link").forEach(x=>x.classList.remove("active"));document.querySelector(`#${id}`).classList.add("active");document.querySelector(`[data-view="${id}"]`).classList.add("active");scrollTo({top:0,behavior:"smooth"})}
 document.querySelectorAll(".nav-link").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 function exportData(){const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="progresso-ingles-marcelo.json";a.click();URL.revokeObjectURL(a.href);toast("Backup exportado.")}
 document.querySelector("#exportButton").onclick=exportData;document.querySelector("#backupButton").onclick=exportData;
 document.querySelector("#importInput").onchange=async e=>{try{state={...blank,...JSON.parse(await e.target.files[0].text())};save();renderAll();toast("Progresso restaurado.")}catch{toast("Não foi possível ler esse backup.")}};
-document.querySelector("#resetButton").onclick=()=>{if(confirm("Apagar todo o progresso salvo neste navegador?")){state={...blank,completed:[],answers:{},scores:{},evaluations:{},confidence:{}};save();renderAll();toast("Progresso reiniciado.")}};
+document.querySelector("#resetButton").onclick=()=>{if(confirm("Apagar todo o progresso salvo neste navegador?")){state={...blank,completed:[],answers:{},scores:{},evaluations:{},confidence:{},chatHistory:{},generatedWeeks:{},lessonReports:{},weeklyReports:{},skillStats:{listening:{correct:0,total:0},vocabulary:{correct:0,total:0},grammar:{correct:0,total:0}},startedAt:new Date().toISOString()};save();renderAll();toast("Progresso reiniciado.")}};
 
 window.addEventListener("online",()=>{document.body.classList.remove("offline");toast("Conexão restabelecida.")});
 window.addEventListener("offline",()=>{document.body.classList.add("offline");toast("Modo offline: exercícios continuam disponíveis.")});
@@ -281,4 +599,5 @@ if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
 let installPrompt;window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();installPrompt=e;document.querySelector("#installButton").hidden=false});
 document.querySelector("#installButton").onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;document.querySelector("#installButton").hidden=true}else toast("Use o menu do navegador e escolha ‘Adicionar à tela inicial’. ")};
 
+rebuildDerivedReports();
 renderAll();
