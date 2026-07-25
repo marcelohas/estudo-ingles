@@ -154,6 +154,10 @@ function lessonReportMarkup(report) {
   </div>`;
 }
 
+function needsCurrentAdaptation() {
+  return state.week > 1 && !state.generatedWeeks[state.week] && weekCompleted(state.week - 1);
+}
+
 function rebuildDerivedReports() {
   let changed = false;
   state.completed.forEach((lessonId) => {
@@ -190,6 +194,7 @@ function renderLesson(){
   document.querySelector("#todayTitle").textContent=`Olá, Marcelo. Vamos ouvir?`;
   document.querySelector("#lessonCard").innerHTML=`
     <div class="lesson-head"><div><span class="lesson-number">SEMANA ${state.week} · DIA ${l.day} DE 7</span><h2>${l.title}</h2><p>${l.goal}</p></div><span class="time-badge">◷ 30 minutos</span></div>
+    ${needsCurrentAdaptation()?`<div class="adaptive-warning"><div><strong>Esta semana ainda usa o plano básico antigo.</strong><span>Gere uma versão personalizada usando seu desempenho da semana anterior.</span></div><button type="button" class="primary" id="adaptCurrentWeek">Adaptar esta semana com IA</button></div>`:""}
     <div class="lesson-body"><div class="media-panel">
       <div class="video-frame online-only"><iframe src="https://www.youtube-nocookie.com/embed/${l.videoId}?rel=0" title="Vídeo: ${l.title}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe></div>
       <div class="offline-note">Sem conexão: revise a estrutura e faça os exercícios. O vídeo ficará disponível quando a internet voltar.</div>
@@ -212,6 +217,8 @@ function renderLesson(){
     </form></div>`;
   document.querySelector("#quizForm").onsubmit=e=>finishLesson(e,l,id);
   document.querySelector("#whatsapp").onclick=()=>shareLesson(l);
+  const adaptButton = document.querySelector("#adaptCurrentWeek");
+  if (adaptButton) adaptButton.onclick = regenerateCurrentWeek;
 
   // Setup chat
   document.querySelector("#chatToggle").onclick=()=>{
@@ -471,6 +478,7 @@ function sanitizeGeneratedWeek(raw, weekNumber, level) {
     throw new Error("INVALID_WEEK_RESPONSE");
   }
   const allowedSkills = ["listening", "vocabulary", "grammar"];
+  const seenQuestions = new Set();
   const lessons = raw.lessons.map((item, lessonIndex) => {
     if (!Array.isArray(item.questions) || item.questions.length !== 3) {
       throw new Error("INVALID_WEEK_RESPONSE");
@@ -483,8 +491,12 @@ function sanitizeGeneratedWeek(raw, weekNumber, level) {
       if (options.length !== 3 || !Number.isInteger(answer) || answer < 0 || answer > 2) {
         throw new Error("INVALID_WEEK_RESPONSE");
       }
+      const questionText = String(question.text || "Escolha a melhor resposta.").slice(0, 300);
+      const fingerprint = questionText.trim().toLocaleLowerCase("pt-BR");
+      if (seenQuestions.has(fingerprint)) throw new Error("DUPLICATE_WEEK_QUESTIONS");
+      seenQuestions.add(fingerprint);
       return q(
-        String(question.text || "Escolha a melhor resposta.").slice(0, 300),
+        questionText,
         options,
         answer,
         allowedSkills.includes(question.skill) ? question.skill : allowedSkills[questionIndex],
@@ -507,6 +519,70 @@ function sanitizeGeneratedWeek(raw, weekNumber, level) {
     generatedAt: new Date().toISOString(),
     lessons,
   };
+}
+
+async function regenerateCurrentWeek() {
+  const currentNumber = state.week;
+  const startedIds = currentWeek().lessons
+    .map((item) => key(currentNumber, item.day))
+    .filter((id) => state.completed.includes(id));
+  if (startedIds.length && !confirm("Você já concluiu aula(s) desta semana. Substituí-las apagará apenas o progresso desta semana. Continuar?")) {
+    return;
+  }
+  if (!currentUser()) {
+    try {
+      await enterWithGoogle();
+    } catch (error) {
+      console.error(error);
+      toast("Conecte sua conta Google para adaptar esta semana.");
+      return;
+    }
+  }
+  const button = document.querySelector("#adaptCurrentWeek");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Criando semana...";
+  }
+  const previousNumber = currentNumber - 1;
+  const report = state.weeklyReports[previousNumber] || buildWeeklyReport(previousNumber);
+  const nextLevel = levelForJourney(currentNumber, report.accuracy);
+  try {
+    const generated = await generateAdaptiveWeek({
+      weekNumber: currentNumber,
+      level: nextLevel,
+      summary: adaptiveSummary(report),
+    });
+    const plan = sanitizeGeneratedWeek(generated, currentNumber, nextLevel);
+    startedIds.forEach((id) => {
+      state.completed = state.completed.filter((completedId) => completedId !== id);
+      delete state.answers[id];
+      delete state.scores[id];
+      delete state.confidence[id];
+      delete state.lessonReports[id];
+      delete state.chatHistory[id];
+    });
+    state.minutes = Math.max(0, state.minutes - startedIds.length * 30);
+    state.weeklyReports[previousNumber] = report;
+    state.evaluations[previousNumber] = {
+      pct: report.accuracy,
+      avg: report.averageConfidence,
+      support: report.accuracy < 80 || report.averageConfidence < 2,
+      message: report.summary,
+    };
+    state.generatedWeeks[currentNumber] = plan;
+    state.currentLevel = nextLevel;
+    state.day = 1;
+    rebuildDerivedReports();
+    save();
+    renderAll();
+    toast(`Semana ${currentNumber} adaptada ao seu desempenho!`);
+  } catch (error) {
+    console.error(error);
+    toast(error.message === "DUPLICATE_WEEK_QUESTIONS"
+      ? "A IA repetiu perguntas. Tente gerar novamente."
+      : "Não foi possível adaptar a semana agora. Seu progresso foi preservado.");
+    renderAll();
+  }
 }
 
 async function evaluateWeek() {

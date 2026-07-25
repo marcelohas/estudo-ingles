@@ -149,6 +149,9 @@ Regras pedagógicas:
 - aumente a dificuldade apenas quando os dados justificarem;
 - cada aula tem exatamente 3 questões, uma de listening, uma de vocabulary e
   uma de grammar;
+- nenhuma pergunta ou conjunto de alternativas pode se repetir em outra aula;
+- cada pergunta deve avaliar especificamente o objetivo e a estrutura da aula
+  em que aparece, e não apenas estratégias gerais de estudo;
 - as perguntas podem ser respondidas usando o objetivo, a estrutura e o
   conteúdo descrito na própria aula;
 - cada questão tem exatamente 3 alternativas e apenas uma correta;
