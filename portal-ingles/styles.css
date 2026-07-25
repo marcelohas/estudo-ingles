@@ -29,6 +29,10 @@
 .chat-input-area button {border-radius:99px;padding:12px 20px}
 .chat-toggle {width:100%;justify-content:center;margin-top:16px}
 .lesson-report p{margin:7px 0 0;line-height:1.45}
+.adaptive-warning{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 24px;background:#fff4dc;border-bottom:1px solid #efd6a4}
+.adaptive-warning div{display:flex;flex-direction:column;gap:4px}
+.adaptive-warning span{color:#6f6148;font-size:13px}
+.adaptive-warning button:disabled{opacity:.65;cursor:wait}
 .progress-details{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px}
 .progress-details>div{background:#fff;border:1px solid var(--line);border-radius:22px;padding:24px;box-shadow:var(--shadow)}
 .progress-details h2{margin:0 0 18px;font-size:23px}
@@ -50,6 +54,7 @@
   .auth-button{font-size:11px;padding:9px!important}
 }
 @media(max-width:620px){
+  .adaptive-warning{align-items:stretch;flex-direction:column}
   .topbar{height:auto;min-height:76px;flex-wrap:wrap;padding-top:8px;padding-bottom:8px}
   .topbar nav{order:3;flex-basis:100%;justify-content:center}
   .auth-area{margin-left:auto}
