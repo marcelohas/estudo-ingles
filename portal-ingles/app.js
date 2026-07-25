@@ -56,9 +56,16 @@ function simple(day,title,videoId,structure){
     q("O que deve ser repetido em voz alta?",["Uma frase útil","Todo o vídeo de memória","Somente palavras em português"],0));
 }
 
-const curatedVideos = initialWeeks.flatMap((week) =>
-  week.lessons.map((item) => item.videoId)
+const videoCatalog = initialWeeks.flatMap((week, weekIndex) =>
+  week.lessons.map((item) => ({
+    videoId: item.videoId,
+    title: item.title,
+    topic: item.goal,
+    structures: item.structure,
+    level: weekIndex === 0 ? "A1" : "A1-A2",
+  }))
 );
+const curatedVideos = videoCatalog.map((item) => item.videoId);
 const skillLabels = {
   listening: "Compreensão",
   vocabulary: "Vocabulário",
@@ -510,8 +517,14 @@ function sanitizeGeneratedWeek(raw, weekNumber, level) {
     throw new Error("INVALID_WEEK_RESPONSE");
   }
   const allowedSkills = ["listening", "vocabulary", "grammar"];
+  const allowedVideoIds = new Set(curatedVideos);
+  const usedVideoIds = new Set();
   const seenQuestions = new Set();
   const lessons = raw.lessons.map((item, lessonIndex) => {
+    if (!allowedVideoIds.has(item.videoId) || usedVideoIds.has(item.videoId)) {
+      throw new Error("INVALID_VIDEO_SELECTION");
+    }
+    usedVideoIds.add(item.videoId);
     if (!Array.isArray(item.questions) || item.questions.length !== 3) {
       throw new Error("INVALID_WEEK_RESPONSE");
     }
@@ -526,19 +539,24 @@ function sanitizeGeneratedWeek(raw, weekNumber, level) {
       const questionText = String(question.text || "Escolha a melhor resposta.").slice(0, 300);
       const fingerprint = questionText.trim().toLocaleLowerCase("pt-BR");
       if (seenQuestions.has(fingerprint)) throw new Error("DUPLICATE_WEEK_QUESTIONS");
+      const evidence = String(question.evidence || "").trim().slice(0, 300);
+      if (!evidence) throw new Error("UNGROUNDED_WEEK_QUESTION");
       seenQuestions.add(fingerprint);
-      return q(
+      return {
+        ...q(
         questionText,
         options,
         answer,
         allowedSkills.includes(question.skill) ? question.skill : allowedSkills[questionIndex],
-      );
+        ),
+        evidence,
+      };
     });
     return lesson(
       lessonIndex + 1,
       String(item.title || `Prática ${lessonIndex + 1}`).slice(0, 90),
       String(item.goal || "Praticar inglês em contexto.").slice(0, 220),
-      curatedVideos[((weekNumber - 1) * 7 + lessonIndex) % curatedVideos.length],
+      item.videoId,
       String(item.structure || "Revise a estrutura em contexto.").slice(0, 350),
       ...questions,
     );
@@ -583,6 +601,12 @@ async function regenerateCurrentWeek() {
       weekNumber: currentNumber,
       level: nextLevel,
       summary: adaptiveSummary(report),
+      videoCatalog,
+      onProgress: (completed, total) => {
+        if (button) button.textContent = completed === total
+          ? "Validando semana..."
+          : `Analisando vídeo ${completed + 1} de ${total}...`;
+      },
     });
     const plan = sanitizeGeneratedWeek(generated, currentNumber, nextLevel);
     startedIds.forEach((id) => {
@@ -610,8 +634,14 @@ async function regenerateCurrentWeek() {
     toast(`Semana ${currentNumber} adaptada ao seu desempenho!`);
   } catch (error) {
     console.error(error);
-    toast(error.message === "DUPLICATE_WEEK_QUESTIONS"
-      ? "A IA repetiu perguntas. Tente gerar novamente."
+    const validationErrors = [
+      "DUPLICATE_WEEK_QUESTIONS",
+      "INVALID_VIDEO_SELECTION",
+      "UNGROUNDED_WEEK_QUESTION",
+      "VIDEO_CONTENT_MISMATCH",
+    ];
+    toast(validationErrors.includes(error.message)
+      ? "A relação entre vídeo, conteúdo e questões não passou na validação. Tente gerar novamente."
       : "Não foi possível adaptar a semana agora. Seu progresso foi preservado.");
     renderAll();
   }
@@ -641,6 +671,12 @@ async function evaluateWeek() {
       weekNumber: nextWeek,
       level: nextLevel,
       summary: adaptiveSummary(report),
+      videoCatalog,
+      onProgress: (completed, total) => {
+        if (button) button.textContent = completed === total
+          ? "Validando semana..."
+          : `Analisando vídeo ${completed + 1} de ${total}...`;
+      },
     });
     const nextPlan = sanitizeGeneratedWeek(generated, nextWeek, nextLevel);
     state.weeklyReports[weekNumber] = report;
@@ -662,6 +698,13 @@ async function evaluateWeek() {
     console.error(error);
     if (error.message === "AUTH_REQUIRED" || error.message === "AUTH_EXPIRED") {
       toast("Sua sessão expirou. Conecte o Google e tente novamente.");
+    } else if ([
+      "DUPLICATE_WEEK_QUESTIONS",
+      "INVALID_VIDEO_SELECTION",
+      "UNGROUNDED_WEEK_QUESTION",
+      "VIDEO_CONTENT_MISMATCH",
+    ].includes(error.message)) {
+      toast("A semana foi rejeitada porque vídeo, conteúdo e questões não ficaram coerentes. Gere novamente.");
     } else {
       toast("A IA não conseguiu criar a semana. Seu progresso foi preservado.");
     }
