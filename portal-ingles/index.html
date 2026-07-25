@@ -10,6 +10,7 @@
   <meta name="description" content="Estudo de inglês em 30 minutos por dia, com foco em audição e progresso adaptativo." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Literata:opsz,wght@7..72,600;7..72,700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css" />
   <link rel="manifest" href="manifest.webmanifest" />
@@ -22,6 +23,11 @@
       <button class="nav-link" data-view="semana">Minha semana</button>
       <button class="nav-link" data-view="progresso">Progresso</button>
     </nav>
+    <div class="auth-area" id="authArea">
+      <span class="auth-user" id="authUser" hidden>Conta Google conectada</span>
+      <button class="secondary auth-button" id="signInButton">Conectar Google</button>
+      <button class="text-button auth-button" id="signOutButton" hidden>Sair</button>
+    </div>
     <button class="install-button" id="installButton" hidden>Instalar</button>
     <button class="icon-button" id="backupButton" title="Exportar backup" aria-label="Exportar backup">↓</button>
   </header>
@@ -62,6 +68,6 @@
     </section>
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>

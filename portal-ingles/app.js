@@ -1,3 +1,12 @@
+import {
+  askTutor,
+  currentUser,
+  enterWithGoogle,
+  isGoogleConfigured,
+  leaveAccount,
+  observeUser,
+} from "./google-gemini-client.js";
+
 const weeks = [
   {
     title: "Ouvir para entender o contexto",
@@ -46,7 +55,7 @@ function simple(day,title,videoId,structure){
     q("O que deve ser repetido em voz alta?",["Uma frase útil","Todo o vídeo de memória","Somente palavras em português"],0));
 }
 
-const blank = {week:1,day:1,completed:[],answers:{},scores:{},minutes:0,evaluations:{},confidence:{}};
+const blank = {week:1,day:1,completed:[],answers:{},scores:{},minutes:0,evaluations:{},confidence:{},chatHistory:{}};
 let stored = JSON.parse(localStorage.getItem("inglesNoRitmo")||"{}");
 let state = {...blank,...stored};
 if(!state.week) state.week=1;
@@ -71,10 +80,155 @@ function renderLesson(){
       <div class="confidence"><label>Como foi a audição hoje? <select id="confidence"><option value="">Escolha</option><option value="1">Difícil</option><option value="2">Razoável</option><option value="3">Boa</option></select></label></div>
       <div class="feedback ${done?"show":""}">${done?`Aula concluída · ${state.scores[id]}/${l.qs.length} respostas corretas.`:""}</div>
       <div class="actions"><button type="submit" class="primary">${done?"Atualizar respostas":"Concluir aula"}</button><button type="button" class="primary whatsapp" id="whatsapp">Enviar pelo WhatsApp</button></div>
+
+      <button type="button" class="secondary chat-toggle" id="chatToggle" style="margin-top:24px">💬 Tirar dúvida com a IA</button>
+      <div class="chat-panel" id="chatPanel" style="display:none">
+        <div class="chat-messages" id="chatMessages"></div>
+        <div class="chat-input-area">
+          <input type="text" id="chatInput" placeholder="${currentUser() ? "Pergunte sobre a aula..." : "Conecte sua conta Google para usar o tutor"}" autocomplete="off" ${currentUser() ? "" : "disabled"}>
+          <button type="button" class="primary" id="sendChat" ${currentUser() ? "" : "disabled"}>Enviar</button>
+        </div>
+      </div>
     </form></div>`;
   document.querySelector("#quizForm").onsubmit=e=>finishLesson(e,l,id);
   document.querySelector("#whatsapp").onclick=()=>shareLesson(l);
+
+  // Setup chat
+  document.querySelector("#chatToggle").onclick=()=>{
+    const panel = document.querySelector("#chatPanel");
+    if(panel.style.display==="none") {
+      panel.style.display="flex";
+      renderChat(id);
+    } else {
+      panel.style.display="none";
+    }
+  };
+
+  document.querySelector("#sendChat").onclick=()=>handleSendChat(id, l);
+  document.querySelector("#chatInput").onkeydown=e=>{if(e.key==="Enter") {e.preventDefault();handleSendChat(id, l);}};
 }
+
+function renderChat(id){
+  const msgs = state.chatHistory[id] || [];
+  const container = document.querySelector("#chatMessages");
+  container.replaceChildren();
+  if(msgs.length === 0) {
+    appendChatMessage(container, "ai", currentUser()
+      ? "Olá! Sou seu tutor de inglês. O que você quer praticar ou entender nesta aula?"
+      : "Entre com sua conta Google para conversar com o tutor.");
+  } else {
+    msgs.forEach(m => appendChatMessage(
+      container,
+      m.role === "user" ? "user" : "ai",
+      m.parts?.[0]?.text || ""
+    ));
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+function appendChatMessage(container, role, text) {
+  const message = document.createElement("div");
+  message.className = `chat-msg ${role}`;
+  const paragraph = document.createElement("p");
+  paragraph.textContent = text;
+  message.append(paragraph);
+  container.append(message);
+}
+
+async function handleSendChat(id, l){
+  const input = document.querySelector("#chatInput");
+  const text = input.value.trim();
+  if(!text) return;
+  if(!currentUser()) {
+    toast("Entre com o Google para usar o tutor.");
+    return;
+  }
+  input.value = "";
+
+  if(!state.chatHistory[id]) state.chatHistory[id] = [];
+  state.chatHistory[id].push({role: "user", parts: [{text}]});
+  save();
+  renderChat(id);
+
+  const container = document.querySelector("#chatMessages");
+  const typingId = "typing-" + Date.now();
+  const typing = document.createElement("div");
+  typing.className = "chat-msg ai";
+  typing.id = typingId;
+  const typingText = document.createElement("p");
+  typingText.textContent = "Pensando...";
+  typing.append(typingText);
+  container.append(typing);
+  container.scrollTop = container.scrollHeight;
+
+  try {
+    const historyWithoutCurrentMessage = state.chatHistory[id].slice(0, -1);
+    const reply = await askTutor({
+      lessonId: id,
+      lesson: l,
+      message: text,
+      history: historyWithoutCurrentMessage,
+    });
+
+    document.getElementById(typingId).remove();
+    state.chatHistory[id].push({role: "model", parts: [{text: reply}]});
+    save();
+    renderChat(id);
+  } catch(e) {
+    document.getElementById(typingId).remove();
+    if (e.message === "AUTH_REQUIRED" || e.message === "AUTH_EXPIRED") {
+      toast("Entre com o Google para usar o tutor.");
+    } else {
+      console.error(e);
+      toast("O tutor não conseguiu responder agora. Tente novamente.");
+    }
+    state.chatHistory[id].pop(); // remove user message so they can try again
+    save();
+    renderChat(id);
+  }
+}
+
+const signInButton = document.querySelector("#signInButton");
+const signOutButton = document.querySelector("#signOutButton");
+const authUser = document.querySelector("#authUser");
+
+signInButton.onclick = async () => {
+  if (!isGoogleConfigured()) {
+    toast("O login Google ainda não foi configurado.");
+    return;
+  }
+  try {
+    await enterWithGoogle();
+  } catch (error) {
+    console.error(error);
+    toast("Não foi possível entrar com o Google.");
+  }
+};
+
+signOutButton.onclick = async () => {
+  try {
+    await leaveAccount();
+  } catch (error) {
+    console.error(error);
+    toast("Não foi possível sair agora.");
+  }
+};
+
+observeUser((user) => {
+  authUser.hidden = !user;
+  authUser.textContent = user ? user.displayName : "";
+  signInButton.hidden = Boolean(user);
+  signOutButton.hidden = !user;
+  document.querySelectorAll("#chatInput, #sendChat").forEach((element) => {
+    element.disabled = !user;
+  });
+  const chatInput = document.querySelector("#chatInput");
+  if (chatInput) {
+    chatInput.placeholder = user
+      ? "Pergunte sobre a aula..."
+      : "Conecte sua conta Google para usar o tutor";
+  }
+});
 
 function finishLesson(e,l,id){
   e.preventDefault();const data=new FormData(e.target),ans=l.qs.map((_,i)=>Number(data.get(`q${i}`))),confidence=Number(document.querySelector("#confidence").value);
@@ -126,4 +280,5 @@ if(!navigator.onLine) document.body.classList.add("offline");
 if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
 let installPrompt;window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();installPrompt=e;document.querySelector("#installButton").hidden=false});
 document.querySelector("#installButton").onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;document.querySelector("#installButton").hidden=true}else toast("Use o menu do navegador e escolha ‘Adicionar à tela inicial’. ")};
+
 renderAll();
