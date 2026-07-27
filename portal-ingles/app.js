@@ -50,10 +50,11 @@ const initialWeeks = [
 function q(text, options, answer, skill){ return {text,options,answer,skill}; }
 function lesson(day,title,goal,videoId,structure,...qs){ return {day,title,goal,videoId,structure,qs}; }
 function simple(day,title,videoId,structure){
+  const keyPhrase = structure.split(" · ")[0];
   return lesson(day,title,`Compreender ${title.toLowerCase()} em uma conversa curta.`,videoId,structure,
-    q("Qual é a melhor estratégia na primeira escuta?",["Traduzir cada palavra","Entender a situação geral","Ativar legenda em português"],1),
-    q("Na segunda escuta, qual apoio usar?",["Legenda em inglês","Tradução automática","Nenhum áudio"],0),
-    q("O que deve ser repetido em voz alta?",["Uma frase útil","Todo o vídeo de memória","Somente palavras em português"],0));
+    q(`Qual frase-chave pertence ao vídeo “${title}”?`,[keyPhrase,"Nice to meet you.","Where is the supermarket?"],0,"listening"),
+    q("Qual é o assunto principal desta conversa?",[title,"Pedir direções","Apresentar-se pela primeira vez"],0,"vocabulary"),
+    q("Qual estrutura deve ser repetida em voz alta nesta aula?",[structure,"I am Anna. · Nice to meet you.","Turn left. · Go straight."],0,"grammar"));
 }
 
 const videoCatalog = initialWeeks.flatMap((week, weekIndex) =>
@@ -172,7 +173,7 @@ function youtubeEmbedUrl(videoId, captions) {
 }
 
 function setListeningPass(mode, lessonItem) {
-  const captions = mode === "captions";
+  const captions = false;
   const iframe = document.querySelector("#lessonVideo");
   iframe.src = youtubeEmbedUrl(lessonItem.videoId, captions);
   document.querySelectorAll(".listen-mode").forEach((button) => {
@@ -181,9 +182,9 @@ function setListeningPass(mode, lessonItem) {
     button.setAttribute("aria-pressed", String(active));
   });
   const status = document.querySelector("#listeningModeStatus");
-  status.textContent = captions
-    ? "2ª escuta preparada com legenda em inglês."
-    : "1ª escuta preparada sem legenda.";
+  status.textContent = mode === "captions"
+    ? `2ª escuta: acompanhe as frases-chave abaixo — ${lessonItem.structure}`
+    : "1ª escuta: assista ao vídeo inteiro sem apoio e identifique a situação geral.";
 }
 
 function needsCurrentAdaptation() {
@@ -232,12 +233,13 @@ function renderLesson(){
       <div class="offline-note">Sem conexão: revise a estrutura e faça os exercícios. O vídeo ficará disponível quando a internet voltar.</div>
       <div class="listen-controls online-only" aria-label="Escolha a etapa da escuta">
         <button type="button" class="listen-mode active" data-mode="no-captions" aria-pressed="true"><strong>1ª escuta</strong><span>Sem legenda</span></button>
-        <button type="button" class="listen-mode" data-mode="captions" aria-pressed="false"><strong>2ª escuta</strong><span>Legenda em inglês</span></button>
+        <button type="button" class="listen-mode" data-mode="captions" aria-pressed="false"><strong>2ª escuta</strong><span>Com frases-chave</span></button>
       </div>
-      <p class="listen-tip" id="listeningModeStatus" aria-live="polite">1ª escuta preparada sem legenda.</p>
+      <p class="listen-tip" id="listeningModeStatus" aria-live="polite">1ª escuta: assista ao vídeo inteiro sem apoio e identifique a situação geral.</p>
       <div class="structure"><strong>Estrutura do dia</strong><br>${l.structure}</div>
     </div><form class="exercise-panel" id="quizForm"><h3>Verifique sua compreensão</h3>
-      ${l.qs.map((question,i)=>`<div class="question"><p>${i+1}. ${question.text}</p>${question.options.map((o,j)=>`<label class="option"><input type="radio" name="q${i}" value="${j}" ${state.answers[id]?.[i]==j?"checked":""}> ${o}</label>`).join("")}</div>`).join("")}
+      <p class="quiz-instruction">Responda somente depois das duas escutas. As questões abaixo usam o tema e as frases-chave deste vídeo.</p>
+      ${l.qs.map((question,i)=>`<div class="question"><span class="question-skill">${skillLabels[questionSkill(question,i)]}</span><p>${i+1}. ${question.text}</p>${question.options.map((o,j)=>`<label class="option"><input type="radio" name="q${i}" value="${j}" ${state.answers[id]?.[i]==j?"checked":""}> ${o}</label>`).join("")}</div>`).join("")}
       <div class="confidence"><label>Como foi a audição hoje? <select id="confidence"><option value="">Escolha</option><option value="1">Difícil</option><option value="2">Razoável</option><option value="3">Boa</option></select></label></div>
       <div class="feedback ${done?"show":""}">${done?lessonReportMarkup(state.lessonReports[id]):""}</div>
       <div class="actions"><button type="submit" class="primary">${done?"Atualizar respostas":"Concluir aula"}</button><button type="button" class="primary whatsapp" id="whatsapp">Enviar pelo WhatsApp</button></div>
@@ -746,7 +748,16 @@ document.querySelector("#resetButton").onclick=()=>{if(confirm("Apagar todo o pr
 window.addEventListener("online",()=>{document.body.classList.remove("offline");toast("Conexão restabelecida.")});
 window.addEventListener("offline",()=>{document.body.classList.add("offline");toast("Modo offline: exercícios continuam disponíveis.")});
 if(!navigator.onLine) document.body.classList.add("offline");
-if("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js");
+if("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js?v=9", { updateViaCache: "none" })
+    .then((registration) => registration.update())
+    .catch((error) => console.error("Falha ao atualizar o portal.", error));
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (sessionStorage.getItem("portalReloadedForUpdate")) return;
+    sessionStorage.setItem("portalReloadedForUpdate", "1");
+    location.reload();
+  });
+}
 let installPrompt;window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();installPrompt=e;document.querySelector("#installButton").hidden=false});
 document.querySelector("#installButton").onclick=async()=>{if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;document.querySelector("#installButton").hidden=true}else toast("Use o menu do navegador e escolha ‘Adicionar à tela inicial’. ")};
 
