@@ -644,7 +644,11 @@ async function regenerateCurrentWeek() {
     ];
     toast(validationErrors.includes(error.message)
       ? "A relação entre vídeo, conteúdo e questões não passou na validação. Tente gerar novamente."
-      : "Não foi possível adaptar a semana agora. Seu progresso foi preservado.");
+      : error.message === "RATE_LIMITED"
+        ? "O limite temporário do Gemini foi atingido. Aguarde alguns minutos e tente novamente."
+        : error.message === "GEMINI_TEMPORARILY_UNAVAILABLE"
+          ? "O Gemini está temporariamente indisponível. Tente novamente em alguns minutos."
+          : "Não foi possível adaptar a semana agora. Seu progresso foi preservado.");
     renderAll();
   }
 }
@@ -707,6 +711,10 @@ async function evaluateWeek() {
       "VIDEO_CONTENT_MISMATCH",
     ].includes(error.message)) {
       toast("A semana foi rejeitada porque vídeo, conteúdo e questões não ficaram coerentes. Gere novamente.");
+    } else if (error.message === "RATE_LIMITED") {
+      toast("O limite temporário do Gemini foi atingido. Aguarde alguns minutos e tente novamente.");
+    } else if (error.message === "GEMINI_TEMPORARILY_UNAVAILABLE") {
+      toast("O Gemini está temporariamente indisponível. Tente novamente em alguns minutos.");
     } else {
       toast("A IA não conseguiu criar a semana. Seu progresso foi preservado.");
     }
@@ -749,7 +757,7 @@ window.addEventListener("online",()=>{document.body.classList.remove("offline");
 window.addEventListener("offline",()=>{document.body.classList.add("offline");toast("Modo offline: exercícios continuam disponíveis.")});
 if(!navigator.onLine) document.body.classList.add("offline");
 if("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js?v=9", { updateViaCache: "none" })
+  navigator.serviceWorker.register("./sw.js?v=10", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch((error) => console.error("Falha ao atualizar o portal.", error));
   navigator.serviceWorker.addEventListener("controllerchange", () => {

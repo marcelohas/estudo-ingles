@@ -104,7 +104,6 @@ export async function askTutor({ lesson, message, history = [] }) {
         contents,
         generationConfig: {
           maxOutputTokens: 350,
-          temperature: 0.4,
         },
       }),
     },
@@ -152,7 +151,7 @@ Responda somente com JSON:
 }`;
   const outline = await requestGeminiJson(
     [{ text: outlinePrompt }],
-    { maxOutputTokens: 1800, temperature: 0.2 },
+    { maxOutputTokens: 1800 },
   );
   if (!Array.isArray(outline.selections) || outline.selections.length !== 7) {
     throw new Error("INVALID_WEEK_RESPONSE");
@@ -209,7 +208,7 @@ Formato:
         { file_data: { file_uri: `https://www.youtube.com/watch?v=${selection.videoId}` } },
         { text: lessonPrompt },
       ],
-      { maxOutputTokens: 1800, temperature: 0.15 },
+      { maxOutputTokens: 1800 },
     );
     lesson.videoId = selection.videoId;
     lesson.day = index + 1;
@@ -235,7 +234,7 @@ ou
 {"valid":false,"issues":["problema específico"]}`,
         },
       ],
-      { maxOutputTokens: 700, temperature: 0 },
+      { maxOutputTokens: 700 },
     );
     if (validation.valid !== true || !Array.isArray(validation.issues)) {
       throw new Error("VIDEO_CONTENT_MISMATCH");
@@ -253,9 +252,11 @@ ou
 }
 
 async function requestGeminiJson(parts, generationConfig) {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent`,
-    {
+  const url =
+    `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent`;
+  let response;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    response = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -268,8 +269,15 @@ async function requestGeminiJson(parts, generationConfig) {
           ...generationConfig,
         },
       }),
-    },
-  );
+    });
+    if (response.status !== 429 && response.status < 500) break;
+    if (attempt === 3) break;
+    const retryAfter = Number(response.headers.get("Retry-After"));
+    const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+      ? retryAfter * 1000
+      : 1200 * (2 ** attempt);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
   const data = await response.json().catch(() => ({}));
   if (response.status === 401 || response.status === 403) {
     accessToken = null;
@@ -277,6 +285,8 @@ async function requestGeminiJson(parts, generationConfig) {
     throw new Error("AUTH_EXPIRED");
   }
   if (!response.ok) {
+    if (response.status === 429) throw new Error("RATE_LIMITED");
+    if (response.status >= 500) throw new Error("GEMINI_TEMPORARILY_UNAVAILABLE");
     throw new Error(data?.error?.message || `Gemini HTTP ${response.status}`);
   }
   const text = data?.candidates?.[0]?.content?.parts
