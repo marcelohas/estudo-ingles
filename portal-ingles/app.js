@@ -2,11 +2,13 @@ import {
   askTutor,
   currentUser,
   enterWithGoogle,
+  evaluateProductiveSkills,
   generateAdaptiveWeek,
   isGoogleConfigured,
   leaveAccount,
   observeUser,
 } from "./google-gemini-client.js";
+import { fixedVideoCatalog } from "./fixed-video-catalog.js";
 
 const initialWeeks = [
   {
@@ -57,20 +59,19 @@ function simple(day,title,videoId,structure){
     q("Qual estrutura deve ser repetida em voz alta nesta aula?",[structure,"I am Anna. · Nice to meet you.","Turn left. · Go straight."],0,"grammar"));
 }
 
-const videoCatalog = initialWeeks.flatMap((week, weekIndex) =>
-  week.lessons.map((item) => ({
-    videoId: item.videoId,
-    title: item.title,
-    topic: item.goal,
-    structures: item.structure,
-    level: weekIndex === 0 ? "A1" : "A1-A2",
-  }))
-);
+const videoCatalog = fixedVideoCatalog;
 const curatedVideos = videoCatalog.map((item) => item.videoId);
+function videoCatalogForLevel(level) {
+  if (level === "A1") return videoCatalog.filter((item) => item.phase === "A1-A2");
+  return videoCatalog.filter((item) => item.phase === "A2-B1");
+}
 const skillLabels = {
   listening: "Compreensão",
   vocabulary: "Vocabulário",
   grammar: "Gramática",
+  reading: "Reading",
+  writing: "Writing",
+  speaking: "Speaking",
 };
 const blank = {
   week: 1,
@@ -89,8 +90,14 @@ const blank = {
     listening: { correct: 0, total: 0 },
     vocabulary: { correct: 0, total: 0 },
     grammar: { correct: 0, total: 0 },
+    reading: { correct: 0, total: 0 },
+    writing: { correct: 0, total: 0 },
+    speaking: { correct: 0, total: 0 },
   },
   currentLevel: "A1",
+  levelStartedWeek: 1,
+  levelAssessments: {},
+  productiveAnswers: {},
   startedAt: new Date().toISOString(),
 };
 let stored = JSON.parse(localStorage.getItem("inglesNoRitmo")||"{}");
@@ -101,17 +108,50 @@ let state = {
   lessonReports: stored.lessonReports || {},
   weeklyReports: stored.weeklyReports || {},
   skillStats: {...blank.skillStats, ...(stored.skillStats || {})},
+  levelAssessments: stored.levelAssessments || {},
+  productiveAnswers: stored.productiveAnswers || {},
 };
 if(!state.week) state.week=1;
 const key=(w,d)=>`${w}-${d}`;
 const save=()=>localStorage.setItem("inglesNoRitmo",JSON.stringify(state));
 const weekAt=(number)=>state.generatedWeeks[number]||initialWeeks[number-1];
 const currentWeek=()=>weekAt(state.week);
-const currentLesson=()=>currentWeek().lessons[state.day-1];
+function normalizeLesson(item) {
+  if (!item) return item;
+  const questions = [...(item.qs || [])];
+  if (!questions.some((question, index) => questionSkill(question, index) === "reading")) {
+    const keyPhrase = String(item.structure || "Use English in context.").split(" · ")[0];
+    questions.push(q(
+      `Leia a frase “${keyPhrase}”. Qual opção pertence ao mesmo contexto da aula?`,
+      [item.title, "Uma situação sem relação com a aula", "Uma instrução em português"],
+      0,
+      "reading",
+    ));
+  }
+  return {
+    ...item,
+    qs: questions,
+    writingPrompt: item.writingPrompt ||
+      `Escreva de 3 a 5 frases em inglês sobre “${item.title}” usando a estrutura: ${item.structure}`,
+    speakingPrompt: item.speakingPrompt ||
+      `Fale de 20 a 40 segundos sobre “${item.title}”. Use pelo menos uma estrutura da aula.`,
+    practiceTasks: Array.isArray(item.practiceTasks)
+      ? item.practiceTasks.map((task) => typeof task === "string"
+        ? { skill: "writing", prompt: task }
+        : task)
+      : [],
+  };
+}
+const currentLesson=()=>normalizeLesson(currentWeek().lessons[state.day-1]);
 function toast(text){const el=document.querySelector("#toast");el.textContent=text;el.classList.add("show");setTimeout(()=>el.classList.remove("show"),2400)}
+function escapeHTML(value) {
+  return String(value || "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[char]);
+}
 
 function questionSkill(question, index) {
-  return question.skill || ["listening", "vocabulary", "grammar"][index] || "grammar";
+  return question.skill || ["listening", "vocabulary", "grammar", "reading"][index] || "grammar";
 }
 
 function percent(correct, total) {
@@ -125,7 +165,7 @@ function performanceBand(value) {
   return "precisa de reforço";
 }
 
-function buildLessonReport(lesson, id, answers, confidence) {
+function buildLessonReport(lesson, id, answers, confidence, productive = null) {
   const bySkill = {};
   lesson.qs.forEach((question, index) => {
     const skill = questionSkill(question, index);
@@ -134,7 +174,14 @@ function buildLessonReport(lesson, id, answers, confidence) {
     if (answers[index] === question.answer) bySkill[skill].correct += 1;
   });
   const correct = lesson.qs.filter((question, index) => answers[index] === question.answer).length;
-  const accuracy = percent(correct, lesson.qs.length);
+  if (productive) {
+    bySkill.writing = { correct: productive.writing.score, total: 100 };
+    bySkill.speaking = { correct: productive.speaking.score, total: 100 };
+  }
+  const skillPercentages = Object.values(bySkill).map((result) => percent(result.correct, result.total));
+  const accuracy = Math.round(
+    skillPercentages.reduce((sum, value) => sum + value, 0) / Math.max(skillPercentages.length, 1),
+  );
   const weakest = Object.entries(bySkill)
     .sort(([, a], [, b]) => percent(a.correct, a.total) - percent(b.correct, b.total))[0]?.[0];
   const recommendation = accuracy >= 85 && confidence >= 2
@@ -148,6 +195,7 @@ function buildLessonReport(lesson, id, answers, confidence) {
     total: lesson.qs.length,
     confidence,
     bySkill,
+    productive,
     recommendation,
     completedAt: new Date().toISOString(),
   };
@@ -159,6 +207,7 @@ function lessonReportMarkup(report) {
     <strong>Relatório da aula</strong>
     <p>${report.accuracy}% de acerto · ${performanceBand(report.accuracy)} · confiança ${report.confidence}/3.</p>
     <p>${report.recommendation}</p>
+    ${report.productive ? `<p><strong>Writing ${report.productive.writing.score}%:</strong> ${escapeHTML(report.productive.writing.feedback)}</p><p><strong>Speaking ${report.productive.speaking.score}%:</strong> ${escapeHTML(report.productive.speaking.feedback)}</p>` : ""}
   </div>`;
 }
 
@@ -197,13 +246,14 @@ function rebuildDerivedReports() {
     if (state.lessonReports[lessonId] || !state.answers[lessonId]) return;
     const [weekNumber, dayNumber] = lessonId.split("-").map(Number);
     const plan = weekAt(weekNumber);
-    const lessonItem = plan?.lessons?.find((item) => item.day === dayNumber);
+    const lessonItem = normalizeLesson(plan?.lessons?.find((item) => item.day === dayNumber));
     if (!lessonItem) return;
     state.lessonReports[lessonId] = buildLessonReport(
       lessonItem,
       lessonId,
       state.answers[lessonId],
       state.confidence[lessonId] || 2,
+      state.productiveAnswers[lessonId]?.evaluation || null,
     );
     changed = true;
   });
@@ -211,6 +261,9 @@ function rebuildDerivedReports() {
     listening: { correct: 0, total: 0 },
     vocabulary: { correct: 0, total: 0 },
     grammar: { correct: 0, total: 0 },
+    reading: { correct: 0, total: 0 },
+    writing: { correct: 0, total: 0 },
+    speaking: { correct: 0, total: 0 },
   };
   Object.values(state.lessonReports).forEach((report) => {
     Object.entries(report.bySkill || {}).forEach(([skill, result]) => {
@@ -224,6 +277,7 @@ function rebuildDerivedReports() {
 
 function renderLesson(){
   const l=currentLesson(), id=key(state.week,l.day), done=state.completed.includes(id);
+  const productive = state.productiveAnswers[id] || {};
   document.querySelector("#todayTitle").textContent=`Olá, Marcelo. Vamos ouvir?`;
   document.querySelector("#lessonCard").innerHTML=`
     <div class="lesson-head"><div><span class="lesson-number">SEMANA ${state.week} · DIA ${l.day} DE 7</span><h2>${l.title}</h2><p>${l.goal}</p></div><span class="time-badge">◷ 30 minutos</span></div>
@@ -240,6 +294,20 @@ function renderLesson(){
     </div><form class="exercise-panel" id="quizForm"><h3>Verifique sua compreensão</h3>
       <p class="quiz-instruction">Responda somente depois das duas escutas. As questões abaixo usam o tema e as frases-chave deste vídeo.</p>
       ${l.qs.map((question,i)=>`<div class="question"><span class="question-skill">${skillLabels[questionSkill(question,i)]}</span><p>${i+1}. ${question.text}</p>${question.options.map((o,j)=>`<label class="option"><input type="radio" name="q${i}" value="${j}" ${state.answers[id]?.[i]==j?"checked":""}> ${o}</label>`).join("")}</div>`).join("")}
+      <div class="productive-exercise">
+        <span class="question-skill">Writing</span>
+        <label for="writingAnswer"><strong>${l.writingPrompt}</strong></label>
+        <textarea id="writingAnswer" rows="5" minlength="30" placeholder="Escreva sua resposta em inglês...">${escapeHTML(productive.writing)}</textarea>
+      </div>
+      <div class="productive-exercise">
+        <span class="question-skill">Speaking</span>
+        <p><strong>${l.speakingPrompt}</strong></p>
+        <button type="button" class="secondary" id="recordSpeaking">🎙️ Começar a falar</button>
+        <label for="speakingTranscript" class="transcript-label">Transcrição reconhecida</label>
+        <textarea id="speakingTranscript" rows="3" placeholder="A transcrição aparecerá aqui. Você também pode corrigi-la antes de enviar.">${escapeHTML(productive.speakingTranscript)}</textarea>
+        <small>A avaliação automática mede conteúdo, vocabulário e clareza da transcrição; não substitui uma avaliação humana de pronúncia.</small>
+      </div>
+      ${l.practiceTasks.length ? `<div class="extra-practice"><strong>Reforço desta aula</strong>${l.practiceTasks.map((task,index) => `<label for="extraPractice${index}"><span class="question-skill">${escapeHTML(task.skill)}</span>${escapeHTML(task.prompt)}</label><textarea id="extraPractice${index}" data-skill="${escapeHTML(task.skill)}" rows="3" placeholder="Registre sua resposta ou a transcrição da sua fala...">${escapeHTML(productive.extraPractice?.[index]?.answer)}</textarea>`).join("")}</div>` : ""}
       <div class="confidence"><label>Como foi a audição hoje? <select id="confidence"><option value="">Escolha</option><option value="1">Difícil</option><option value="2">Razoável</option><option value="3">Boa</option></select></label></div>
       <div class="feedback ${done?"show":""}">${done?lessonReportMarkup(state.lessonReports[id]):""}</div>
       <div class="actions"><button type="submit" class="primary">${done?"Atualizar respostas":"Concluir aula"}</button><button type="button" class="primary whatsapp" id="whatsapp">Enviar pelo WhatsApp</button></div>
@@ -258,6 +326,7 @@ function renderLesson(){
   document.querySelectorAll(".listen-mode").forEach((button) => {
     button.onclick = () => setListeningPass(button.dataset.mode, l);
   });
+  document.querySelector("#recordSpeaking").onclick = startSpeakingRecognition;
   const adaptButton = document.querySelector("#adaptCurrentWeek");
   if (adaptButton) adaptButton.onclick = regenerateCurrentWeek;
 
@@ -399,9 +468,73 @@ observeUser((user) => {
   if (document.querySelector("#assessmentCard")?.children.length) renderWeek();
 });
 
-function finishLesson(e,l,id){
-  e.preventDefault();const data=new FormData(e.target),ans=l.qs.map((_,i)=>Number(data.get(`q${i}`))),confidence=Number(document.querySelector("#confidence").value);
-  if(ans.some(Number.isNaN)||!confidence){toast("Responda às questões e avalie a audição.");return}
+function startSpeakingRecognition() {
+  const Recognition = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+  if (!Recognition) {
+    toast("O reconhecimento de voz não está disponível. Digite a transcrição do que você falou.");
+    return;
+  }
+  const button = document.querySelector("#recordSpeaking");
+  const transcript = document.querySelector("#speakingTranscript");
+  const recognition = new Recognition();
+  recognition.lang = "en-US";
+  recognition.interimResults = false;
+  recognition.continuous = false;
+  recognition.onstart = () => {
+    button.disabled = true;
+    button.textContent = "Ouvindo...";
+  };
+  recognition.onresult = (event) => {
+    transcript.value = Array.from(event.results)
+      .map((result) => result[0]?.transcript || "")
+      .join(" ")
+      .trim();
+  };
+  recognition.onerror = () => toast("Não foi possível reconhecer a fala. Tente novamente ou digite a transcrição.");
+  recognition.onend = () => {
+    button.disabled = false;
+    button.textContent = "🎙️ Falar novamente";
+  };
+  recognition.start();
+}
+
+async function finishLesson(e,l,id){
+  e.preventDefault();const data=new FormData(e.target),rawAnswers=l.qs.map((_,i)=>data.get(`q${i}`)),ans=rawAnswers.map(Number),confidence=Number(document.querySelector("#confidence").value);
+  const writing = document.querySelector("#writingAnswer").value.trim();
+  const speakingTranscript = document.querySelector("#speakingTranscript").value.trim();
+  const extraPractice = Array.from(document.querySelectorAll("[id^='extraPractice']")).map((field) => ({
+    skill: field.dataset.skill,
+    prompt: l.practiceTasks[Number(field.id.replace("extraPractice", ""))]?.prompt || "",
+    answer: field.value.trim(),
+  }));
+  if(rawAnswers.some((answer)=>answer===null)||ans.some(Number.isNaN)||!confidence){toast("Responda às questões e avalie a audição.");return}
+  if (writing.length < 30 || speakingTranscript.length < 10) {
+    toast("Complete o Writing e registre sua fala antes de concluir.");
+    return;
+  }
+  if (extraPractice.some((task) => task.answer.length < 10)) {
+    toast("Complete também os exercícios extras de reforço.");
+    return;
+  }
+  if (!currentUser()) {
+    toast("Conecte o Google para a IA avaliar Writing e Speaking.");
+    return;
+  }
+  const submitButton = e.submitter || e.target.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  submitButton.textContent = "Avaliando competências...";
+  let productive;
+  try {
+    productive = await evaluateProductiveSkills({ lesson: l, writing, speakingTranscript, extraPractice });
+  } catch (error) {
+    console.error(error);
+    submitButton.disabled = false;
+    submitButton.textContent = "Concluir aula";
+    toast(error.message === "RATE_LIMITED"
+      ? "O limite temporário do Gemini foi atingido. Aguarde e tente novamente."
+      : "A IA não conseguiu avaliar Writing e Speaking agora.");
+    return;
+  }
   const previousReport = state.lessonReports[id];
   if (previousReport) {
     Object.entries(previousReport.bySkill || {}).forEach(([skill, result]) => {
@@ -409,13 +542,14 @@ function finishLesson(e,l,id){
       state.skillStats[skill].total -= result.total;
     });
   }
-  const report = buildLessonReport(l, id, ans, confidence);
+  const report = buildLessonReport(l, id, ans, confidence, productive);
   Object.entries(report.bySkill).forEach(([skill, result]) => {
     state.skillStats[skill] = state.skillStats[skill] || { correct: 0, total: 0 };
     state.skillStats[skill].correct += result.correct;
     state.skillStats[skill].total += result.total;
   });
   state.answers[id]=ans;state.scores[id]=report.correct;state.confidence[id]=confidence;state.lessonReports[id]=report;
+  state.productiveAnswers[id]={writing,speakingTranscript,extraPractice,evaluation:productive};
   if(!state.completed.includes(id)){state.completed.push(id);state.minutes+=30}
   if(l.day<7) state.day=l.day+1;save();renderAll();toast("Aula concluída. Progresso salvo!");
 }
@@ -427,7 +561,7 @@ function shareLesson(l){
 
 function weekCompleted(w){return weekAt(w).lessons.every(l=>state.completed.includes(key(w,l.day)))}
 function renderWeek(){
-  const w=currentWeek();document.querySelector("#weekTitle").textContent=`Semana ${state.week}`;document.querySelector("#weekGrid").innerHTML=w.lessons.map(l=>{const done=state.completed.includes(key(state.week,l.day));return `<article class="day-card ${done?"done":""}" data-day="${l.day}"><strong>${done?"✓ ":""}Dia ${l.day}</strong><span>${l.title}</span></article>`}).join("");
+  const w=currentWeek();document.querySelector("#weekTitle").textContent=w.assessmentMode?`Avaliação geral ${nextLevel[state.currentLevel] || ""}`:`Semana ${state.week}`;document.querySelector("#weekGrid").innerHTML=w.lessons.map(l=>{const done=state.completed.includes(key(state.week,l.day));return `<article class="day-card ${done?"done":""}" data-day="${l.day}"><strong>${done?"✓ ":""}Dia ${l.day}</strong><span>${l.title}</span></article>`}).join("");
   document.querySelector("#semana .subtitle").textContent = `${w.title} · ${w.level || state.currentLevel}`;
   document.querySelectorAll(".day-card").forEach(c=>c.onclick=()=>{state.day=Number(c.dataset.day);save();switchView("hoje")});
   const unlocked=weekCompleted(state.week), evaluated=Boolean(state.evaluations[state.week]);
@@ -436,7 +570,7 @@ function renderWeek(){
   const authMessage = currentUser()
     ? "A IA analisará seus acertos, confiança e competências para criar a próxima semana."
     : "Conecte sua conta Google para a IA criar a próxima semana.";
-  document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">AVALIAÇÃO SEMANAL</p><h2>${evaluated?"Semana avaliada":unlocked?"Pronto para adaptar":"Conclua as sete aulas"}</h2><p>${report?`${report.accuracy}% de acerto · ${report.summary}`:unlocked?authMessage:`${7-w.lessons.filter(l=>state.completed.includes(key(state.week,l.day))).length} aula(s) restante(s).`}</p>${unlocked&&!evaluated?`<div class="actions"><button class="primary" id="evaluate">${currentUser()?"Analisar e gerar próxima semana":"Conectar Google para continuar"}</button></div>`:""}`;
+  document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">${w.assessmentMode?"CERTIFICAÇÃO DE NÍVEL":"AVALIAÇÃO SEMANAL"}</p><h2>${evaluated?"Semana avaliada":unlocked?"Pronto para adaptar":"Conclua as sete aulas"}</h2><p>${report?`${report.accuracy}% de desempenho geral · ${report.summary}`:unlocked?authMessage:`${7-w.lessons.filter(l=>state.completed.includes(key(state.week,l.day))).length} aula(s) restante(s).`}</p>${unlocked&&!evaluated?`<div class="actions"><button class="primary" id="evaluate">${currentUser()?w.assessmentMode?"Corrigir avaliação e continuar":"Analisar e gerar próxima semana":"Conectar Google para continuar"}</button></div>`:""}`;
   if(unlocked&&!evaluated) document.querySelector("#evaluate").onclick=evaluateWeek;
 }
 
@@ -444,8 +578,6 @@ function buildWeeklyReport(weekNumber) {
   const reports = weekAt(weekNumber).lessons
     .map((item) => state.lessonReports[key(weekNumber, item.day)])
     .filter(Boolean);
-  const correct = reports.reduce((sum, report) => sum + report.correct, 0);
-  const total = reports.reduce((sum, report) => sum + report.total, 0);
   const bySkill = {};
   reports.forEach((report) => {
     Object.entries(report.bySkill || {}).forEach(([skill, result]) => {
@@ -458,7 +590,9 @@ function buildWeeklyReport(weekNumber) {
     .sort(([, a], [, b]) => percent(a.correct, a.total) - percent(b.correct, b.total))[0]?.[0] || "listening";
   const strongestSkill = Object.entries(bySkill)
     .sort(([, a], [, b]) => percent(b.correct, b.total) - percent(a.correct, a.total))[0]?.[0] || "grammar";
-  const accuracy = percent(correct, total);
+  const accuracy = Math.round(
+    reports.reduce((sum, report) => sum + report.accuracy, 0) / Math.max(reports.length, 1),
+  );
   const averageConfidence = reports.reduce((sum, report) => sum + report.confidence, 0) / Math.max(reports.length, 1);
   const summary = accuracy >= 85 && averageConfidence >= 2
     ? `Bom domínio. A próxima semana avançará gradualmente, preservando revisão de ${skillLabels[weakestSkill].toLowerCase()}.`
@@ -475,29 +609,44 @@ function buildWeeklyReport(weekNumber) {
   };
 }
 
-function levelForJourney(nextWeek, accuracy) {
-  const gates = [
-    { week: 120, level: "C1" },
-    { week: 72, level: "B2" },
-    { week: 36, level: "B1" },
-    { week: 12, level: "A2" },
-  ];
-  const planned = gates.find((gate) => nextWeek >= gate.week)?.level || "A1";
-  if (accuracy < 65) return state.currentLevel;
-  return planned;
+const nextLevel = { A1: "A2", A2: "B1", B1: "B2", B2: "C1" };
+const minimumWeeksAtLevel = { A1: 4, A2: 16, B1: 32, B2: 48 };
+
+function skillPercentages(report) {
+  return Object.fromEntries(Object.entries(skillLabels).map(([skill]) => {
+    const result = report.bySkill?.[skill] || { correct: 0, total: 0 };
+    return [skill, percent(result.correct, result.total)];
+  }));
+}
+
+function assessmentPassed(report) {
+  const values = skillPercentages(report);
+  return Object.values(values).every((value) => value >= 70);
+}
+
+function shouldScheduleLevelAssessment(weekNumber) {
+  const weeksAtLevel = weekNumber - (state.levelStartedWeek || 1) + 1;
+  const supportedTarget = ["A2", "B1"].includes(nextLevel[state.currentLevel]);
+  return supportedTarget &&
+    weeksAtLevel >= (minimumWeeksAtLevel[state.currentLevel] || 999) &&
+    !currentWeek().assessmentMode;
 }
 
 function adaptiveSummary(report) {
+  const skills = skillPercentages(report);
+  const recentVideoIds = state.completed.map((lessonId) => {
+    const [weekNumber, dayNumber] = lessonId.split("-").map(Number);
+    return weekAt(weekNumber)?.lessons?.find((item) => item.day === dayNumber)?.videoId;
+  }).filter(Boolean).slice(-14);
   return {
     previousWeek: report.week,
     accuracy: report.accuracy,
     averageConfidence: report.averageConfidence,
-    skills: Object.fromEntries(
-      Object.entries(report.bySkill).map(([skill, result]) => [
-        skill,
-        percent(result.correct, result.total),
-      ])
-    ),
+    skills,
+    weakSkills: Object.entries(skills)
+      .filter(([, value]) => value < 70)
+      .map(([skill, value]) => ({ skill, value })),
+    recentVideoIds,
     weakestSkill: report.weakestSkill,
     strongestSkill: report.strongestSkill,
     recentLessonReports: weekAt(report.week).lessons.map((lessonItem) => {
@@ -514,11 +663,11 @@ function adaptiveSummary(report) {
   };
 }
 
-function sanitizeGeneratedWeek(raw, weekNumber, level) {
+function sanitizeGeneratedWeek(raw, weekNumber, level, assessmentMode = false) {
   if (!raw || !Array.isArray(raw.lessons) || raw.lessons.length !== 7) {
     throw new Error("INVALID_WEEK_RESPONSE");
   }
-  const allowedSkills = ["listening", "vocabulary", "grammar"];
+  const allowedSkills = ["listening", "vocabulary", "grammar", "reading"];
   const allowedVideoIds = new Set(curatedVideos);
   const usedVideoIds = new Set();
   const seenQuestions = new Set();
@@ -527,7 +676,7 @@ function sanitizeGeneratedWeek(raw, weekNumber, level) {
       throw new Error("INVALID_VIDEO_SELECTION");
     }
     usedVideoIds.add(item.videoId);
-    if (!Array.isArray(item.questions) || item.questions.length !== 3) {
+    if (!Array.isArray(item.questions) || item.questions.length < 4 || item.questions.length > 8) {
       throw new Error("INVALID_WEEK_RESPONSE");
     }
     const questions = item.questions.map((question, questionIndex) => {
@@ -549,12 +698,16 @@ function sanitizeGeneratedWeek(raw, weekNumber, level) {
         questionText,
         options,
         answer,
-        allowedSkills.includes(question.skill) ? question.skill : allowedSkills[questionIndex],
+        allowedSkills.includes(question.skill) ? question.skill : allowedSkills[questionIndex % allowedSkills.length],
         ),
         evidence,
       };
     });
-    return lesson(
+    if (!allowedSkills.every((skill) =>
+      questions.some((question, index) => questionSkill(question, index) === skill))) {
+      throw new Error("INVALID_WEEK_RESPONSE");
+    }
+    const lessonItem = lesson(
       lessonIndex + 1,
       String(item.title || `Prática ${lessonIndex + 1}`).slice(0, 90),
       String(item.goal || "Praticar inglês em contexto.").slice(0, 220),
@@ -562,6 +715,15 @@ function sanitizeGeneratedWeek(raw, weekNumber, level) {
       String(item.structure || "Revise a estrutura em contexto.").slice(0, 350),
       ...questions,
     );
+    lessonItem.writingPrompt = String(item.writingPrompt || "").slice(0, 500);
+    lessonItem.speakingPrompt = String(item.speakingPrompt || "").slice(0, 500);
+    lessonItem.practiceTasks = Array.isArray(item.practiceTasks)
+      ? item.practiceTasks.map((task) => ({
+        skill: ["writing", "speaking"].includes(task?.skill) ? task.skill : "writing",
+        prompt: String(task?.prompt || task || "").slice(0, 350),
+      })).filter((task) => task.prompt).slice(0, 8)
+      : [];
+    return lessonItem;
   });
   return {
     title: String(raw.title || `Semana adaptativa ${weekNumber}`).slice(0, 100),
@@ -569,6 +731,7 @@ function sanitizeGeneratedWeek(raw, weekNumber, level) {
     rationale: String(raw.rationale || "Semana adaptada ao desempenho recente.").slice(0, 400),
     generatedByAI: true,
     generatedAt: new Date().toISOString(),
+    assessmentMode,
     lessons,
   };
 }
@@ -597,20 +760,22 @@ async function regenerateCurrentWeek() {
   }
   const previousNumber = currentNumber - 1;
   const report = state.weeklyReports[previousNumber] || buildWeeklyReport(previousNumber);
-  const nextLevel = levelForJourney(currentNumber, report.accuracy);
+  const targetLevel = state.currentLevel;
+  const assessmentMode = Boolean(currentWeek().assessmentMode);
   try {
     const generated = await generateAdaptiveWeek({
       weekNumber: currentNumber,
-      level: nextLevel,
+      level: targetLevel,
       summary: adaptiveSummary(report),
-      videoCatalog,
+      videoCatalog: videoCatalogForLevel(targetLevel),
+      assessmentMode,
       onProgress: (completed, total) => {
         if (button) button.textContent = completed === total
           ? "Validando semana..."
           : `Analisando vídeo ${completed + 1} de ${total}...`;
       },
     });
-    const plan = sanitizeGeneratedWeek(generated, currentNumber, nextLevel);
+    const plan = sanitizeGeneratedWeek(generated, currentNumber, targetLevel, assessmentMode);
     startedIds.forEach((id) => {
       state.completed = state.completed.filter((completedId) => completedId !== id);
       delete state.answers[id];
@@ -618,6 +783,7 @@ async function regenerateCurrentWeek() {
       delete state.confidence[id];
       delete state.lessonReports[id];
       delete state.chatHistory[id];
+      delete state.productiveAnswers[id];
     });
     state.minutes = Math.max(0, state.minutes - startedIds.length * 30);
     state.weeklyReports[previousNumber] = report;
@@ -628,7 +794,6 @@ async function regenerateCurrentWeek() {
       message: report.summary,
     };
     state.generatedWeeks[currentNumber] = plan;
-    state.currentLevel = nextLevel;
     state.day = 1;
     rebuildDerivedReports();
     save();
@@ -671,21 +836,38 @@ async function evaluateWeek() {
   const weekNumber = state.week;
   const report = buildWeeklyReport(weekNumber);
   const nextWeek = weekNumber + 1;
-  const nextLevel = levelForJourney(nextWeek, report.accuracy);
+  const completedAssessment = Boolean(currentWeek().assessmentMode);
+  const passed = completedAssessment && assessmentPassed(report);
+  const assessmentMode = !completedAssessment && shouldScheduleLevelAssessment(weekNumber);
+  const previousLevel = state.currentLevel;
+  const targetLevel = passed && nextLevel[previousLevel] ? nextLevel[previousLevel] : previousLevel;
   try {
     const generated = await generateAdaptiveWeek({
       weekNumber: nextWeek,
-      level: nextLevel,
+      level: targetLevel,
       summary: adaptiveSummary(report),
-      videoCatalog,
+      videoCatalog: videoCatalogForLevel(targetLevel),
+      assessmentMode,
       onProgress: (completed, total) => {
         if (button) button.textContent = completed === total
           ? "Validando semana..."
           : `Analisando vídeo ${completed + 1} de ${total}...`;
       },
     });
-    const nextPlan = sanitizeGeneratedWeek(generated, nextWeek, nextLevel);
+    const nextPlan = sanitizeGeneratedWeek(generated, nextWeek, targetLevel, assessmentMode);
     state.weeklyReports[weekNumber] = report;
+    if (completedAssessment) {
+      state.levelAssessments[weekNumber] = {
+        targetLevel: nextLevel[previousLevel],
+        passed,
+        skills: skillPercentages(report),
+        completedAt: new Date().toISOString(),
+      };
+      if (passed) {
+        state.currentLevel = targetLevel;
+        state.levelStartedWeek = nextWeek;
+      }
+    }
     state.evaluations[weekNumber] = {
       pct: report.accuracy,
       avg: report.averageConfidence,
@@ -693,13 +875,18 @@ async function evaluateWeek() {
       message: report.summary,
     };
     state.generatedWeeks[nextWeek] = nextPlan;
-    state.currentLevel = nextLevel;
     state.week = nextWeek;
     state.day = 1;
     save();
     renderAll();
     switchView("progresso");
-    toast(`Semana ${nextWeek} criada pela IA!`);
+    toast(assessmentMode
+      ? `Avaliação geral para certificação ${nextLevel[targetLevel]} criada!`
+      : completedAssessment && !passed
+        ? "O nível ainda não foi certificado. A próxima semana reforçará os pontos abaixo de 70%."
+        : completedAssessment && passed
+          ? `Nível ${targetLevel} certificado!`
+          : `Semana ${nextWeek} criada pela IA!`);
   } catch (error) {
     console.error(error);
     if (error.message === "AUTH_REQUIRED" || error.message === "AUTH_EXPIRED") {
@@ -723,8 +910,9 @@ async function evaluateWeek() {
 }
 
 function renderStats(){
-  const answered=Object.values(state.answers).reduce((n,a)=>n+a.length,0),correct=Object.values(state.scores).reduce((a,b)=>a+b,0);
-  document.querySelector("#completedStat").textContent=state.completed.length;document.querySelector("#minutesStat").textContent=`${state.minutes} min`;document.querySelector("#accuracyStat").textContent=answered?`${Math.round(correct/answered*100)}%`:"—";
+  const reports=Object.values(state.lessonReports);
+  const overallAccuracy=reports.length?Math.round(reports.reduce((sum,report)=>sum+report.accuracy,0)/reports.length):null;
+  document.querySelector("#completedStat").textContent=state.completed.length;document.querySelector("#minutesStat").textContent=`${state.minutes} min`;document.querySelector("#accuracyStat").textContent=overallAccuracy!==null?`${overallAccuracy}%`:"—";
   const last=state.weeklyReports[Math.max(1,state.week-1)];
   document.querySelector("#adaptiveMessage").textContent=last
     ? `${last.summary} Trajetória: semana ${state.week} de 156.`
@@ -741,6 +929,7 @@ function renderStats(){
   const weekly = Object.values(state.weeklyReports).sort((a,b)=>b.week-a.week).slice(0,3);
   const lessons = Object.values(state.lessonReports).sort((a,b)=>new Date(b.completedAt)-new Date(a.completedAt)).slice(0,4);
   document.querySelector("#reportsList").innerHTML = [
+    ...Object.entries(state.levelAssessments).sort(([a],[b])=>Number(b)-Number(a)).slice(0,2).map(([week,assessment]) => `<article class="report-item weekly"><strong>Avaliação geral · semana ${week}</strong><span>${assessment.passed?`✓ ${assessment.targetLevel} certificado`:`Ainda não aprovado para ${assessment.targetLevel}`} · corte de 70% por competência</span></article>`),
     ...weekly.map((report) => `<article class="report-item weekly"><strong>Semana ${report.week}</strong><span>${report.accuracy}% · ${report.summary}</span></article>`),
     ...lessons.map((report) => `<article class="report-item"><strong>${report.title}</strong><span>${report.accuracy}% · ${report.recommendation}</span></article>`),
   ].join("") || `<p class="empty-state">Os relatórios aparecerão após a primeira aula concluída.</p>`;
@@ -750,14 +939,14 @@ function switchView(id){document.querySelectorAll(".view,.nav-link").forEach(x=>
 document.querySelectorAll(".nav-link").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 function exportData(){const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="progresso-ingles-marcelo.json";a.click();URL.revokeObjectURL(a.href);toast("Backup exportado.")}
 document.querySelector("#exportButton").onclick=exportData;document.querySelector("#backupButton").onclick=exportData;
-document.querySelector("#importInput").onchange=async e=>{try{state={...blank,...JSON.parse(await e.target.files[0].text())};save();renderAll();toast("Progresso restaurado.")}catch{toast("Não foi possível ler esse backup.")}};
-document.querySelector("#resetButton").onclick=()=>{if(confirm("Apagar todo o progresso salvo neste navegador?")){state={...blank,completed:[],answers:{},scores:{},evaluations:{},confidence:{},chatHistory:{},generatedWeeks:{},lessonReports:{},weeklyReports:{},skillStats:{listening:{correct:0,total:0},vocabulary:{correct:0,total:0},grammar:{correct:0,total:0}},startedAt:new Date().toISOString()};save();renderAll();toast("Progresso reiniciado.")}};
+document.querySelector("#importInput").onchange=async e=>{try{const imported=JSON.parse(await e.target.files[0].text());state={...blank,...imported,generatedWeeks:imported.generatedWeeks||{},lessonReports:imported.lessonReports||{},weeklyReports:imported.weeklyReports||{},levelAssessments:imported.levelAssessments||{},productiveAnswers:imported.productiveAnswers||{},skillStats:{...blank.skillStats,...(imported.skillStats||{})}};rebuildDerivedReports();save();renderAll();toast("Progresso restaurado.")}catch{toast("Não foi possível ler esse backup.")}};
+document.querySelector("#resetButton").onclick=()=>{if(confirm("Apagar todo o progresso salvo neste navegador?")){state={...blank,completed:[],answers:{},scores:{},evaluations:{},confidence:{},chatHistory:{},generatedWeeks:{},lessonReports:{},weeklyReports:{},levelAssessments:{},productiveAnswers:{},skillStats:JSON.parse(JSON.stringify(blank.skillStats)),startedAt:new Date().toISOString()};save();renderAll();toast("Progresso reiniciado.")}};
 
 window.addEventListener("online",()=>{document.body.classList.remove("offline");toast("Conexão restabelecida.")});
 window.addEventListener("offline",()=>{document.body.classList.add("offline");toast("Modo offline: exercícios continuam disponíveis.")});
 if(!navigator.onLine) document.body.classList.add("offline");
 if("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js?v=10", { updateViaCache: "none" })
+  navigator.serviceWorker.register("./sw.js?v=11", { updateViaCache: "none" })
     .then((registration) => registration.update())
     .catch((error) => console.error("Falha ao atualizar o portal.", error));
   navigator.serviceWorker.addEventListener("controllerchange", () => {

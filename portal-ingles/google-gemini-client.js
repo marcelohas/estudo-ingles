@@ -128,17 +128,77 @@ export async function askTutor({ lesson, message, history = [] }) {
   return text;
 }
 
-export async function generateAdaptiveWeek({ weekNumber, level, summary, videoCatalog, onProgress }) {
+export async function evaluateProductiveSkills({ lesson, writing, speakingTranscript, extraPractice = [] }) {
   if (!accessToken) throw new Error("AUTH_REQUIRED");
+  const prompt = `
+Avalie duas produções de um adulto brasileiro estudando inglês no nível indicado.
+Aula: ${JSON.stringify({
+    title: lesson.title,
+    goal: lesson.goal,
+    structure: lesson.structure,
+  })}
+
+WRITING:
+${writing.slice(0, 2500)}
+
+SPEAKING (transcrição reconhecida pelo navegador):
+${speakingTranscript.slice(0, 2500)}
+
+EXERCÍCIOS EXTRAS:
+${JSON.stringify(extraPractice).slice(0, 4000)}
+
+Avalie cada competência de 0 a 100, considerando também todos os exercícios
+extras da respectiva competência. Em Writing considere cumprimento da tarefa,
+clareza, gramática e vocabulário. Em Speaking avalie somente conteúdo,
+organização, gramática e vocabulário observáveis na transcrição. Não avalie
+pronúncia, ritmo ou sotaque, pois o áudio não foi fornecido.
+
+Responda somente com JSON:
+{
+  "writing":{"score":0,"feedback":"orientação curta em português"},
+  "speaking":{"score":0,"feedback":"orientação curta em português"}
+}`;
+  const result = await requestGeminiJson([{ text: prompt }], { maxOutputTokens: 600 });
+  for (const skill of ["writing", "speaking"]) {
+    const score = Number(result?.[skill]?.score);
+    if (!Number.isFinite(score)) throw new Error("INVALID_SKILL_EVALUATION");
+    result[skill] = {
+      score: Math.max(0, Math.min(100, Math.round(score))),
+      feedback: String(result[skill]?.feedback || "Continue praticando.").slice(0, 350),
+    };
+  }
+  return result;
+}
+
+export async function generateAdaptiveWeek({
+  weekNumber,
+  level,
+  summary,
+  videoCatalog,
+  assessmentMode = false,
+  onProgress,
+}) {
+  if (!accessToken) throw new Error("AUTH_REQUIRED");
+  const recentIds = new Set(summary?.recentVideoIds || []);
+  const freshCatalog = assessmentMode
+    ? videoCatalog
+    : videoCatalog.filter((item) => !recentIds.has(item.videoId));
+  const selectableCatalog = freshCatalog.length >= 7 ? freshCatalog : videoCatalog;
 
   const outlinePrompt = `
 Planeje a semana ${weekNumber} de inglês de Marcelo, nível ${level}, rumo ao C1
-em 156 semanas. Escolha exatamente 7 vídeos DIFERENTES do catálogo abaixo.
+em 156 semanas. ${assessmentMode ? "Esta é uma AVALIAÇÃO GERAL DE NÍVEL." : ""}
+Escolha exatamente 7 vídeos DIFERENTES do catálogo abaixo.
 Use somente videoId existentes. Adapte a seleção ao desempenho e escolha vídeos
 cujo assunto realmente permita trabalhar a competência indicada.
+Não selecione IDs presentes em summary.recentVideoIds, salvo se o modo for
+avaliação geral. Priorize a faixa correspondente ao nível atual.
+Dentro da faixa, respeite o campo order e avance gradualmente. Prefira os
+menores números ainda não estudados antes de saltar para aulas posteriores.
+Competências abaixo de 70% em summary.weakSkills devem receber mais exercícios.
 
 Desempenho: ${JSON.stringify(summary)}
-Catálogo: ${JSON.stringify(videoCatalog)}
+Catálogo: ${JSON.stringify(selectableCatalog)}
 
 Responda somente com JSON:
 {
@@ -156,7 +216,7 @@ Responda somente com JSON:
   if (!Array.isArray(outline.selections) || outline.selections.length !== 7) {
     throw new Error("INVALID_WEEK_RESPONSE");
   }
-  const allowed = new Set(videoCatalog.map((item) => item.videoId));
+  const allowed = new Set(selectableCatalog.map((item) => item.videoId));
   const selected = new Set();
   outline.selections.forEach((item) => {
     if (!allowed.has(item.videoId) || selected.has(item.videoId)) {
@@ -169,7 +229,7 @@ Responda somente com JSON:
   for (let index = 0; index < outline.selections.length; index += 1) {
     onProgress?.(index, outline.selections.length);
     const selection = outline.selections[index];
-    const catalogItem = videoCatalog.find((item) => item.videoId === selection.videoId);
+    const catalogItem = selectableCatalog.find((item) => item.videoId === selection.videoId);
     const lessonPrompt = `
 Analise o vídeo fornecido e crie a aula ${index + 1} para um brasileiro no nível
 ${level}. Foco solicitado: ${selection.focus}. Referência do catálogo:
@@ -177,12 +237,18 @@ ${JSON.stringify(catalogItem)}.
 
 Regras obrigatórias:
 - objetivo, estrutura, vocabulário e perguntas devem ser sustentados pelo vídeo;
-- gere exatamente 3 questões: listening, vocabulary e grammar;
+- gere pelo menos 4 questões: listening, vocabulary, grammar e reading;
+- para cada competência receptiva abaixo de 70%, gere uma questão adicional
+  dessa competência;
 - cada questão tem 3 alternativas e uma resposta correta de índice 0, 1 ou 2;
 - "evidence" deve registrar uma frase curta ou fato efetivamente presente no vídeo
   que sustenta a resposta; não invente falas;
 - a questão de listening mede compreensão do que acontece ou é dito no vídeo;
+- a questão de reading inclui um trecho curto em inglês relacionado ao vídeo;
 - não faça perguntas sobre estratégias de estudo ou uso de legenda;
+- crie writingPrompt e speakingPrompt ligados ao vídeo;
+- se writing ou speaking estiver abaixo de 70%, acrescente duas tarefas curtas
+  de reforço em practiceTasks para cada competência fraca;
 - use português nas instruções e inglês nos exemplos;
 - responda somente com JSON, sem markdown.
 
@@ -193,12 +259,15 @@ Formato:
   "title":"título relacionado ao vídeo",
   "goal":"objetivo observável",
   "structure":"estrutura com exemplos do vídeo",
+  "writingPrompt":"produção escrita de 3 a 5 frases",
+  "speakingPrompt":"produção oral de 20 a 40 segundos",
+  "practiceTasks":[{"skill":"writing","prompt":"tarefa adicional"}],
   "questions":[
     {
       "text":"pergunta",
       "options":["a","b","c"],
       "answer":0,
-      "skill":"listening",
+      "skill":"listening|vocabulary|grammar|reading",
       "evidence":"fala curta ou fato do vídeo"
     }
   ]
@@ -222,7 +291,9 @@ ${JSON.stringify(lesson)}
 
 Marque "valid" como true somente se TODAS as condições forem atendidas:
 - título, objetivo e estrutura correspondem ao assunto e à linguagem do vídeo;
-- as três perguntas podem ser respondidas pelo vídeo e pelo conteúdo da aula;
+- todas as perguntas podem ser respondidas pelo vídeo e pelo conteúdo da aula;
+- existem questões de listening, vocabulary, grammar e reading;
+- Writing e Speaking estão ligados ao objetivo e à linguagem do vídeo;
 - cada gabarito está correto;
 - cada evidence existe de fato no vídeo e sustenta a resposta;
 - as perguntas medem listening, vocabulary e grammar, sem perguntar sobre
