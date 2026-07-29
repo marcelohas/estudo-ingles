@@ -25,7 +25,10 @@ export function observeUser(callback) {
 export async function enterWithGoogle() {
   await ensureGoogleIdentity();
   if (pendingLogin) return pendingLogin;
+  return requestGoogleAccessToken(accessToken ? "" : "consent");
+}
 
+function requestGoogleAccessToken(prompt = "") {
   pendingLogin = new Promise((resolve, reject) => {
     tokenClient.callback = (response) => {
       pendingLogin = null;
@@ -43,10 +46,31 @@ export async function enterWithGoogle() {
       reject(new Error(error?.type || "GOOGLE_AUTH_FAILED"));
     };
 
-    tokenClient.requestAccessToken({ prompt: accessToken ? "" : "consent" });
+    tokenClient.requestAccessToken({ prompt });
   });
 
   return pendingLogin;
+}
+
+async function refreshGoogleAccessToken() {
+  await ensureGoogleIdentity();
+  if (pendingLogin) return pendingLogin;
+  try {
+    return await requestGoogleAccessToken("");
+  } catch (error) {
+    accessToken = null;
+    notifyUser();
+    throw new Error("AUTH_EXPIRED", { cause: error });
+  }
+}
+
+async function fetchWithFreshGoogleToken(url, options) {
+  let response = await fetch(url, options());
+  if (response.status !== 401) return response;
+
+  await refreshGoogleAccessToken();
+  response = await fetch(url, options());
+  return response;
 }
 
 export async function leaveAccount() {
@@ -91,9 +115,9 @@ export async function askTutor({ lesson, message, history = [] }) {
     parts: [{ text: message.slice(0, 2000) }],
   });
 
-  const response = await fetch(
+  const response = await fetchWithFreshGoogleToken(
     `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent`,
-    {
+    () => ({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -106,11 +130,11 @@ export async function askTutor({ lesson, message, history = [] }) {
           maxOutputTokens: 350,
         },
       }),
-    },
+    }),
   );
 
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     accessToken = null;
     notifyUser();
     throw new Error("AUTH_EXPIRED");
@@ -327,7 +351,7 @@ async function requestGeminiJson(parts, generationConfig) {
     `https://generativelanguage.googleapis.com/${GEMINI_API_VERSION}/models/${GEMINI_MODEL}:generateContent`;
   let response;
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    response = await fetch(url, {
+    response = await fetchWithFreshGoogleToken(url, () => ({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -340,7 +364,7 @@ async function requestGeminiJson(parts, generationConfig) {
           ...generationConfig,
         },
       }),
-    });
+    }));
     if (response.status !== 429 && response.status < 500) break;
     if (attempt === 3) break;
     const retryAfter = Number(response.headers.get("Retry-After"));
@@ -350,7 +374,7 @@ async function requestGeminiJson(parts, generationConfig) {
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401 || response.status === 403) {
+  if (response.status === 401) {
     accessToken = null;
     notifyUser();
     throw new Error("AUTH_EXPIRED");
