@@ -84,6 +84,7 @@ const blank = {
   confidence: {},
   chatHistory: {},
   generatedWeeks: {},
+  generationDrafts: {},
   lessonReports: {},
   weeklyReports: {},
   skillStats: {
@@ -105,6 +106,7 @@ let state = {
   ...blank,
   ...stored,
   generatedWeeks: stored.generatedWeeks || {},
+  generationDrafts: stored.generationDrafts || {},
   lessonReports: stored.lessonReports || {},
   weeklyReports: stored.weeklyReports || {},
   skillStats: {...blank.skillStats, ...(stored.skillStats || {})},
@@ -768,6 +770,14 @@ function sanitizeGeneratedWeek(raw, weekNumber, level, assessmentMode = false) {
   };
 }
 
+function cacheGenerationDraft(weekNumber, checkpoint) {
+  state.generationDrafts[weekNumber] = {
+    ...checkpoint,
+    updatedAt: new Date().toISOString(),
+  };
+  save();
+}
+
 async function regenerateCurrentWeek() {
   const currentNumber = state.week;
   const startedIds = currentWeek().lessons
@@ -801,10 +811,14 @@ async function regenerateCurrentWeek() {
       summary: adaptiveSummary(report),
       videoCatalog: videoCatalogForLevel(targetLevel),
       assessmentMode,
-      onProgress: (completed, total) => {
+      draft: state.generationDrafts[currentNumber],
+      onCheckpoint: (checkpoint) => cacheGenerationDraft(currentNumber, checkpoint),
+      onProgress: (completed, total, fromCache) => {
         if (button) button.textContent = completed === total
           ? "Validando semana..."
-          : `Analisando vídeo ${completed + 1} de ${total}...`;
+          : fromCache
+            ? `Reutilizando aula ${completed + 1} do cache...`
+            : `Analisando vídeo ${completed + 1} de ${total}...`;
       },
     });
     const plan = sanitizeGeneratedWeek(generated, currentNumber, targetLevel, assessmentMode);
@@ -826,6 +840,7 @@ async function regenerateCurrentWeek() {
       message: report.summary,
     };
     state.generatedWeeks[currentNumber] = plan;
+    delete state.generationDrafts[currentNumber];
     state.day = 1;
     rebuildDerivedReports();
     save();
@@ -837,15 +852,20 @@ async function regenerateCurrentWeek() {
       "DUPLICATE_WEEK_QUESTIONS",
       "INVALID_VIDEO_SELECTION",
       "UNGROUNDED_WEEK_QUESTION",
-      "VIDEO_CONTENT_MISMATCH",
     ];
+    if (validationErrors.includes(error.message)) {
+      delete state.generationDrafts[currentNumber];
+      save();
+    }
     toast(validationErrors.includes(error.message)
       ? "A relação entre vídeo, conteúdo e questões não passou na validação. Tente gerar novamente."
+      : error.message === "VIDEO_CONTENT_MISMATCH"
+        ? "Uma aula não passou na validação. As aulas anteriores ficaram salvas para a próxima tentativa."
       : error.message === "RATE_LIMITED"
-        ? "O limite temporário do Gemini foi atingido. Aguarde alguns minutos e tente novamente."
+        ? "O limite do Gemini foi atingido. O que já foi gerado ficou salvo; aguarde e continue depois."
         : error.message === "GEMINI_TEMPORARILY_UNAVAILABLE"
-          ? "O Gemini está temporariamente indisponível. Tente novamente em alguns minutos."
-          : "Não foi possível adaptar a semana agora. Seu progresso foi preservado.");
+          ? "O Gemini está indisponível. O que já foi gerado ficou salvo para continuar depois."
+          : "Não foi possível adaptar agora. A geração parcial e seu progresso foram preservados.");
     renderAll();
   }
 }
@@ -885,10 +905,14 @@ async function evaluateWeek() {
       summary: adaptiveSummary(report),
       videoCatalog: videoCatalogForLevel(targetLevel),
       assessmentMode,
-      onProgress: (completed, total) => {
+      draft: state.generationDrafts[nextWeek],
+      onCheckpoint: (checkpoint) => cacheGenerationDraft(nextWeek, checkpoint),
+      onProgress: (completed, total, fromCache) => {
         if (button) button.textContent = completed === total
           ? "Validando semana..."
-          : `Analisando vídeo ${completed + 1} de ${total}...`;
+          : fromCache
+            ? `Reutilizando aula ${completed + 1} do cache...`
+            : `Analisando vídeo ${completed + 1} de ${total}...`;
       },
     });
     const nextPlan = sanitizeGeneratedWeek(generated, nextWeek, targetLevel, assessmentMode);
@@ -912,6 +936,7 @@ async function evaluateWeek() {
       message: report.summary,
     };
     state.generatedWeeks[nextWeek] = nextPlan;
+    delete state.generationDrafts[nextWeek];
     state.week = nextWeek;
     state.day = 1;
     save();
@@ -932,15 +957,18 @@ async function evaluateWeek() {
       "DUPLICATE_WEEK_QUESTIONS",
       "INVALID_VIDEO_SELECTION",
       "UNGROUNDED_WEEK_QUESTION",
-      "VIDEO_CONTENT_MISMATCH",
     ].includes(error.message)) {
+      delete state.generationDrafts[nextWeek];
+      save();
       toast("A semana foi rejeitada porque vídeo, conteúdo e questões não ficaram coerentes. Gere novamente.");
+    } else if (error.message === "VIDEO_CONTENT_MISMATCH") {
+      toast("Uma aula não passou na validação. As aulas anteriores ficaram salvas para continuar.");
     } else if (error.message === "RATE_LIMITED") {
-      toast("O limite temporário do Gemini foi atingido. Aguarde alguns minutos e tente novamente.");
+      toast("O limite do Gemini foi atingido. A geração parcial ficou salva; tente continuar depois.");
     } else if (error.message === "GEMINI_TEMPORARILY_UNAVAILABLE") {
-      toast("O Gemini está temporariamente indisponível. Tente novamente em alguns minutos.");
+      toast("O Gemini está indisponível. A geração parcial ficou salva para continuar depois.");
     } else {
-      toast("A IA não conseguiu criar a semana. Seu progresso foi preservado.");
+      toast("A IA não concluiu a semana. A geração parcial e seu progresso foram preservados.");
     }
     renderWeek();
   }
@@ -976,8 +1004,8 @@ function switchView(id){document.querySelectorAll(".view,.nav-link").forEach(x=>
 document.querySelectorAll(".nav-link").forEach(b=>b.onclick=()=>switchView(b.dataset.view));
 function exportData(){const blob=new Blob([JSON.stringify(state,null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="progresso-ingles-marcelo.json";a.click();URL.revokeObjectURL(a.href);toast("Backup exportado.")}
 document.querySelector("#exportButton").onclick=exportData;document.querySelector("#backupButton").onclick=exportData;
-document.querySelector("#importInput").onchange=async e=>{try{const imported=JSON.parse(await e.target.files[0].text());state={...blank,...imported,generatedWeeks:imported.generatedWeeks||{},lessonReports:imported.lessonReports||{},weeklyReports:imported.weeklyReports||{},levelAssessments:imported.levelAssessments||{},productiveAnswers:imported.productiveAnswers||{},skillStats:{...blank.skillStats,...(imported.skillStats||{})}};rebuildDerivedReports();save();renderAll();toast("Progresso restaurado.")}catch{toast("Não foi possível ler esse backup.")}};
-document.querySelector("#resetButton").onclick=()=>{if(confirm("Apagar todo o progresso salvo neste navegador?")){state={...blank,completed:[],answers:{},scores:{},evaluations:{},confidence:{},chatHistory:{},generatedWeeks:{},lessonReports:{},weeklyReports:{},levelAssessments:{},productiveAnswers:{},skillStats:JSON.parse(JSON.stringify(blank.skillStats)),startedAt:new Date().toISOString()};save();renderAll();toast("Progresso reiniciado.")}};
+document.querySelector("#importInput").onchange=async e=>{try{const imported=JSON.parse(await e.target.files[0].text());state={...blank,...imported,generatedWeeks:imported.generatedWeeks||{},generationDrafts:imported.generationDrafts||{},lessonReports:imported.lessonReports||{},weeklyReports:imported.weeklyReports||{},levelAssessments:imported.levelAssessments||{},productiveAnswers:imported.productiveAnswers||{},skillStats:{...blank.skillStats,...(imported.skillStats||{})}};rebuildDerivedReports();save();renderAll();toast("Progresso restaurado.")}catch{toast("Não foi possível ler esse backup.")}};
+document.querySelector("#resetButton").onclick=()=>{if(confirm("Apagar todo o progresso salvo neste navegador?")){state={...blank,completed:[],answers:{},scores:{},evaluations:{},confidence:{},chatHistory:{},generatedWeeks:{},generationDrafts:{},lessonReports:{},weeklyReports:{},levelAssessments:{},productiveAnswers:{},skillStats:JSON.parse(JSON.stringify(blank.skillStats)),startedAt:new Date().toISOString()};save();renderAll();toast("Progresso reiniciado.")}};
 
 window.addEventListener("online",()=>{document.body.classList.remove("offline");toast("Conexão restabelecida.")});
 window.addEventListener("offline",()=>{document.body.classList.add("offline");toast("Modo offline: exercícios continuam disponíveis.")});
