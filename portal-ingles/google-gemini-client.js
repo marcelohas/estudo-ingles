@@ -200,6 +200,8 @@ export async function generateAdaptiveWeek({
   summary,
   videoCatalog,
   assessmentMode = false,
+  draft = null,
+  onCheckpoint,
   onProgress,
 }) {
   if (!accessToken) throw new Error("AUTH_REQUIRED");
@@ -208,6 +210,7 @@ export async function generateAdaptiveWeek({
     ? videoCatalog
     : videoCatalog.filter((item) => !recentIds.has(item.videoId));
   const selectableCatalog = freshCatalog.length >= 7 ? freshCatalog : videoCatalog;
+  const summaryFingerprint = JSON.stringify(summary);
 
   const outlinePrompt = `
 Planeje a semana ${weekNumber} de inglês de Marcelo, nível ${level}, rumo ao C1
@@ -237,10 +240,15 @@ Responda somente com JSON:
     {"day":1,"videoId":"ID_DO_CATALOGO","focus":"foco pedagógico específico"}
   ]
 }`;
-  const outline = await requestGeminiJson(
-    [{ text: outlinePrompt }],
-    { maxOutputTokens: 1800 },
-  );
+  let outline = draft?.summaryFingerprint === summaryFingerprint
+    ? draft.outline
+    : null;
+  if (!outline) {
+    outline = await requestGeminiJson(
+      [{ text: outlinePrompt }],
+      { maxOutputTokens: 1800 },
+    );
+  }
   if (!Array.isArray(outline.selections) || outline.selections.length !== 7) {
     throw new Error("INVALID_WEEK_RESPONSE");
   }
@@ -253,10 +261,23 @@ Responda somente com JSON:
     selected.add(item.videoId);
   });
 
+  const cachedLessons = draft?.summaryFingerprint === summaryFingerprint &&
+    Array.isArray(draft.lessons)
+    ? draft.lessons
+    : [];
   const lessons = [];
+  onCheckpoint?.({ summaryFingerprint, outline, lessons });
   for (let index = 0; index < outline.selections.length; index += 1) {
-    onProgress?.(index, outline.selections.length);
     const selection = outline.selections[index];
+    const cachedLesson = cachedLessons[index];
+    const canReuseCachedLesson = cachedLesson?.videoId === selection.videoId &&
+      Number(cachedLesson.day) === index + 1;
+    onProgress?.(index, outline.selections.length, canReuseCachedLesson);
+    if (canReuseCachedLesson) {
+      lessons.push(cachedLesson);
+      onCheckpoint?.({ summaryFingerprint, outline, lessons: [...lessons] });
+      continue;
+    }
     const catalogItem = selectableCatalog.find((item) => item.videoId === selection.videoId);
     const lessonPrompt = `
 Analise o vídeo fornecido e crie a aula ${index + 1} para um brasileiro no nível
@@ -339,6 +360,7 @@ ou
       throw new Error("VIDEO_CONTENT_MISMATCH");
     }
     lessons.push(lesson);
+    onCheckpoint?.({ summaryFingerprint, outline, lessons: [...lessons] });
   }
   onProgress?.(outline.selections.length, outline.selections.length);
 
