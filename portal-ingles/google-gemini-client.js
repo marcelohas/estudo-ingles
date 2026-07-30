@@ -212,6 +212,10 @@ export async function generateAdaptiveWeek({
   const outlinePrompt = `
 Planeje a semana ${weekNumber} de inglês de Marcelo, nível ${level}, rumo ao C1
 em 156 semanas. ${assessmentMode ? "Esta é uma AVALIAÇÃO GERAL DE NÍVEL." : ""}
+Use os 7 itens de summary.recentLessonReports como fonte principal da adaptação.
+Considere o desempenho por competência, a confiança, a recomendação e os
+feedbacks de Writing e Speaking de cada aula. Reforce padrões de dificuldade
+recorrentes em mais de um relatório e avance nos pontos já consolidados.
 Escolha exatamente 7 vídeos DIFERENTES do catálogo abaixo.
 Use somente videoId existentes. Adapte a seleção ao desempenho e escolha vídeos
 cujo assunto realmente permita trabalhar a competência indicada.
