@@ -196,6 +196,13 @@ function buildLessonReport(lesson, id, answers, confidence, productive = null) {
     confidence,
     bySkill,
     productive,
+    corrections: lesson.qs.map((question, index) => ({
+      question: question.text,
+      skill: questionSkill(question, index),
+      correct: answers[index] === question.answer,
+      selectedAnswer: question.options[answers[index]] || "Sem resposta",
+      correctAnswer: question.options[question.answer],
+    })),
     recommendation,
     completedAt: new Date().toISOString(),
   };
@@ -203,10 +210,18 @@ function buildLessonReport(lesson, id, answers, confidence, productive = null) {
 
 function lessonReportMarkup(report) {
   if (!report) return "";
+  const hasDetailedCorrection = Array.isArray(report.corrections);
+  const corrections = (report.corrections || []).filter((item) => !item.correct);
   return `<div class="lesson-report">
     <strong>Relatório da aula</strong>
     <p>${report.accuracy}% de acerto · ${performanceBand(report.accuracy)} · confiança ${report.confidence}/3.</p>
     <p>${report.recommendation}</p>
+    ${!hasDetailedCorrection
+      ? "<p><strong>Corrija novamente esta aula para gerar o detalhamento das respostas.</strong></p>"
+      : corrections.length
+      ? `<div class="lesson-corrections"><strong>Respostas para revisar</strong>${corrections.map((item) =>
+        `<p><span class="question-skill">${escapeHTML(skillLabels[item.skill] || item.skill)}</span> ${escapeHTML(item.question)}<br><small>Sua resposta: ${escapeHTML(item.selectedAnswer)} · Correta: ${escapeHTML(item.correctAnswer)}</small></p>`).join("")}</div>`
+      : "<p><strong>✓ Todas as questões objetivas estão corretas.</strong></p>"}
     ${report.productive ? `<p><strong>Writing ${report.productive.writing.score}%:</strong> ${escapeHTML(report.productive.writing.feedback)}</p><p><strong>Speaking ${report.productive.speaking.score}%:</strong> ${escapeHTML(report.productive.speaking.feedback)}</p>` : ""}
   </div>`;
 }
@@ -310,7 +325,7 @@ function renderLesson(){
       ${l.practiceTasks.length ? `<div class="extra-practice"><strong>Reforço desta aula</strong>${l.practiceTasks.map((task,index) => `<label for="extraPractice${index}"><span class="question-skill">${escapeHTML(task.skill)}</span>${escapeHTML(task.prompt)}</label><textarea id="extraPractice${index}" data-skill="${escapeHTML(task.skill)}" rows="3" placeholder="Registre sua resposta ou a transcrição da sua fala...">${escapeHTML(productive.extraPractice?.[index]?.answer)}</textarea>`).join("")}</div>` : ""}
       <div class="confidence"><label>Como foi a audição hoje? <select id="confidence"><option value="">Escolha</option><option value="1">Difícil</option><option value="2">Razoável</option><option value="3">Boa</option></select></label></div>
       <div class="feedback ${done?"show":""}">${done?lessonReportMarkup(state.lessonReports[id]):""}</div>
-      <div class="actions"><button type="submit" class="primary">${done?"Atualizar respostas":"Concluir aula"}</button><button type="button" class="primary whatsapp" id="whatsapp">Enviar pelo WhatsApp</button></div>
+      <div class="actions"><button type="submit" class="primary">${done?"Corrigir novamente e atualizar relatório":"Corrigir aula e gerar relatório"}</button><button type="button" class="primary whatsapp" id="whatsapp">Enviar pelo WhatsApp</button></div>
 
       <button type="button" class="secondary chat-toggle" id="chatToggle" style="margin-top:24px">💬 Tirar dúvida com a IA</button>
       <div class="chat-panel" id="chatPanel" style="display:none">
@@ -522,14 +537,16 @@ async function finishLesson(e,l,id){
   }
   const submitButton = e.submitter || e.target.querySelector('button[type="submit"]');
   submitButton.disabled = true;
-  submitButton.textContent = "Avaliando competências...";
+  submitButton.textContent = "Corrigindo aula...";
   let productive;
   try {
     productive = await evaluateProductiveSkills({ lesson: l, writing, speakingTranscript, extraPractice });
   } catch (error) {
     console.error(error);
     submitButton.disabled = false;
-    submitButton.textContent = "Concluir aula";
+    submitButton.textContent = state.lessonReports[id]
+      ? "Corrigir novamente e atualizar relatório"
+      : "Corrigir aula e gerar relatório";
     toast(error.message === "RATE_LIMITED"
       ? "O limite temporário do Gemini foi atingido. Aguarde e tente novamente."
       : "A IA não conseguiu avaliar Writing e Speaking agora.");
@@ -551,7 +568,7 @@ async function finishLesson(e,l,id){
   state.answers[id]=ans;state.scores[id]=report.correct;state.confidence[id]=confidence;state.lessonReports[id]=report;
   state.productiveAnswers[id]={writing,speakingTranscript,extraPractice,evaluation:productive};
   if(!state.completed.includes(id)){state.completed.push(id);state.minutes+=30}
-  if(l.day<7) state.day=l.day+1;save();renderAll();toast("Aula concluída. Progresso salvo!");
+  if(l.day<7) state.day=l.day+1;save();renderAll();toast("Aula corrigida e relatório gerado!");
 }
 
 function shareLesson(l){
@@ -560,24 +577,33 @@ function shareLesson(l){
 }
 
 function weekCompleted(w){return weekAt(w).lessons.every(l=>state.completed.includes(key(w,l.day)))}
+function lessonReportsReady(w) {
+  return weekAt(w).lessons.every((lessonItem) =>
+    Boolean(state.lessonReports[key(w, lessonItem.day)]));
+}
 function renderWeek(){
   const w=currentWeek();document.querySelector("#weekTitle").textContent=w.assessmentMode?`Avaliação geral ${nextLevel[state.currentLevel] || ""}`:`Semana ${state.week}`;document.querySelector("#weekGrid").innerHTML=w.lessons.map(l=>{const done=state.completed.includes(key(state.week,l.day));return `<article class="day-card ${done?"done":""}" data-day="${l.day}"><strong>${done?"✓ ":""}Dia ${l.day}</strong><span>${l.title}</span></article>`}).join("");
   document.querySelector("#semana .subtitle").textContent = `${w.title} · ${w.level || state.currentLevel}`;
   document.querySelectorAll(".day-card").forEach(c=>c.onclick=()=>{state.day=Number(c.dataset.day);save();switchView("hoje")});
-  const unlocked=weekCompleted(state.week), evaluated=Boolean(state.evaluations[state.week]);
+  const unlocked=lessonReportsReady(state.week), evaluated=Boolean(state.evaluations[state.week]);
+  const readyReports = w.lessons.filter((lessonItem) =>
+    state.lessonReports[key(state.week, lessonItem.day)]).length;
   document.querySelector("#assessmentCard").className=`assessment-card ${unlocked?"":"locked"}`;
   const report = state.weeklyReports[state.week];
   const authMessage = currentUser()
-    ? "A IA analisará seus acertos, confiança e competências para criar a próxima semana."
+    ? "A IA usará os sete relatórios das aulas para criar a próxima semana."
     : "Conecte sua conta Google para a IA criar a próxima semana.";
-  document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">${w.assessmentMode?"CERTIFICAÇÃO DE NÍVEL":"AVALIAÇÃO SEMANAL"}</p><h2>${evaluated?"Semana avaliada":unlocked?"Pronto para adaptar":"Conclua as sete aulas"}</h2><p>${report?`${report.accuracy}% de desempenho geral · ${report.summary}`:unlocked?authMessage:`${7-w.lessons.filter(l=>state.completed.includes(key(state.week,l.day))).length} aula(s) restante(s).`}</p>${unlocked&&!evaluated?`<div class="actions"><button class="primary" id="evaluate">${currentUser()?w.assessmentMode?"Corrigir avaliação e continuar":"Analisar e gerar próxima semana":"Conectar Google para continuar"}</button></div>`:""}`;
+  document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">${w.assessmentMode?"CERTIFICAÇÃO DE NÍVEL":"RELATÓRIOS DA SEMANA"}</p><h2>${evaluated?"Nova semana gerada":unlocked?"Sete relatórios prontos":"Corrija as sete aulas"}</h2><p>${report?`${report.accuracy}% de desempenho geral · ${report.summary}`:unlocked?authMessage:`${readyReports} de 7 relatórios gerados.`}</p>${unlocked&&!evaluated?`<div class="actions"><button class="primary" id="evaluate">${currentUser()?w.assessmentMode?"Gerar próxima semana após certificação":"Gerar próxima semana com os relatórios":"Conectar Google para continuar"}</button></div>`:""}`;
   if(unlocked&&!evaluated) document.querySelector("#evaluate").onclick=evaluateWeek;
 }
 
 function buildWeeklyReport(weekNumber) {
-  const reports = weekAt(weekNumber).lessons
-    .map((item) => state.lessonReports[key(weekNumber, item.day)])
-    .filter(Boolean);
+  const weekLessons = weekAt(weekNumber).lessons;
+  const reports = weekLessons
+    .map((item) => state.lessonReports[key(weekNumber, item.day)]);
+  if (reports.length !== 7 || reports.some((report) => !report)) {
+    throw new Error("LESSON_REPORTS_INCOMPLETE");
+  }
   const bySkill = {};
   reports.forEach((report) => {
     Object.entries(report.bySkill || {}).forEach(([skill, result]) => {
@@ -605,6 +631,7 @@ function buildWeeklyReport(weekNumber) {
     weakestSkill,
     strongestSkill,
     summary,
+    lessonReports: reports,
     completedAt: new Date().toISOString(),
   };
 }
@@ -652,10 +679,15 @@ function adaptiveSummary(report) {
     recentLessonReports: weekAt(report.week).lessons.map((lessonItem) => {
       const item = state.lessonReports[key(report.week, lessonItem.day)];
       return {
+        day: lessonItem.day,
         title: lessonItem.title,
-        accuracy: item?.accuracy || 0,
-        confidence: item?.confidence || 0,
-        recommendation: item?.recommendation || "",
+        accuracy: item.accuracy,
+        confidence: item.confidence,
+        skills: Object.fromEntries(Object.entries(item.bySkill || {}).map(
+          ([skill, result]) => [skill, percent(result.correct, result.total)])),
+        recommendation: item.recommendation,
+        writingFeedback: item.productive?.writing?.feedback || "",
+        speakingFeedback: item.productive?.speaking?.feedback || "",
       };
     }),
     weeksCompleted: Object.keys(state.weeklyReports).length + 1,
@@ -819,6 +851,11 @@ async function regenerateCurrentWeek() {
 }
 
 async function evaluateWeek() {
+  if (!lessonReportsReady(state.week)) {
+    toast("Corrija as sete aulas e gere todos os relatórios primeiro.");
+    renderWeek();
+    return;
+  }
   if (!currentUser()) {
     try {
       await enterWithGoogle();
@@ -831,7 +868,7 @@ async function evaluateWeek() {
   const button = document.querySelector("#evaluate");
   if (button) {
     button.disabled = true;
-    button.textContent = "Analisando evolução...";
+    button.textContent = "Lendo os sete relatórios...";
   }
   const weekNumber = state.week;
   const report = buildWeeklyReport(weekNumber);
