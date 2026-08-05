@@ -443,3 +443,29 @@ function notifyUser() {
   const user = currentUser();
   userObservers.forEach((callback) => callback(user));
 }
+
+export async function generateWeeklyFinalTest({ weekNumber, level, summary }) {
+  const prompt = `Gere um teste final para a semana ${weekNumber} de inglês (Nível ${level}).
+O aluno teve o seguinte desempenho na semana (skills variam de 0 a 100%):
+${JSON.stringify(summary, null, 2)}
+
+O teste deve ter 10 questões de múltipla escolha focadas principalmente nos pontos fracos da semana (skills com <70%). Além disso, inclua 1 "writingPrompt" que instrua o aluno a escrever um pequeno texto (de 3 a 5 frases) demonstrando o uso prático do conteúdo estudado na semana.
+
+Retorne APENAS um JSON com o seguinte formato:
+{
+  "title": "Teste Final da Semana ${weekNumber}",
+  "questions": [
+    {
+      "text": "...",
+      "options": ["...", "...", "..."],
+      "answer": 0,
+      "skill": "grammar"
+    }
+  ],
+  "writingPrompt": "Escreva sobre..."
+}`;
+  return await requestGeminiJson([
+    { text: "Você é um professor de inglês rigoroso avaliando um aluno no final de uma semana de estudos." },
+    { text: prompt }
+  ]);
+}

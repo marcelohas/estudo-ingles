@@ -4,11 +4,13 @@ import {
   enterWithGoogle,
   evaluateProductiveSkills,
   generateAdaptiveWeek,
+  generateWeeklyFinalTest,
   isGoogleConfigured,
   leaveAccount,
   observeUser,
 } from "./google-gemini-client.js";
 import { fixedVideoCatalog } from "./fixed-video-catalog.js";
+import { getRecommendationsForSkill } from "./youtube-recommendations.js";
 
 const initialWeeks = [
   {
@@ -99,6 +101,9 @@ const blank = {
   levelStartedWeek: 1,
   levelAssessments: {},
   productiveAnswers: {},
+  weeklyFinalTests: {},
+  finalTestCompleted: false,
+  finalTestPending: null,
   startedAt: new Date().toISOString(),
 };
 let stored = JSON.parse(localStorage.getItem("inglesNoRitmo")||"{}");
@@ -112,6 +117,9 @@ let state = {
   skillStats: {...blank.skillStats, ...(stored.skillStats || {})},
   levelAssessments: stored.levelAssessments || {},
   productiveAnswers: stored.productiveAnswers || {},
+  weeklyFinalTests: stored.weeklyFinalTests || {},
+  finalTestCompleted: stored.finalTestCompleted || false,
+  finalTestPending: stored.finalTestPending || null,
 };
 if(!state.week) state.week=1;
 const key=(w,d)=>`${w}-${d}`;
@@ -189,6 +197,7 @@ function buildLessonReport(lesson, id, answers, confidence, productive = null) {
   const recommendation = accuracy >= 85 && confidence >= 2
     ? "Avance mantendo uma revisão curta desta estrutura."
     : `Revise ${skillLabels[weakest]?.toLowerCase() || "o conteúdo"} antes da próxima aula.`;
+  const alternatives = getRecommendationsForSkill(weakest || 'listening', state.currentLevel);
   return {
     lessonId: id,
     title: lesson.title,
@@ -206,6 +215,7 @@ function buildLessonReport(lesson, id, answers, confidence, productive = null) {
       correctAnswer: question.options[question.answer],
     })),
     recommendation,
+    alternatives,
     completedAt: new Date().toISOString(),
   };
 }
@@ -214,10 +224,14 @@ function lessonReportMarkup(report) {
   if (!report) return "";
   const hasDetailedCorrection = Array.isArray(report.corrections);
   const corrections = (report.corrections || []).filter((item) => !item.correct);
+  const alternativesMarkup = report.alternatives?.length
+    ? `<div class="lesson-alternatives" style="margin-top: 1rem; font-size: 0.9em; background: rgba(0,0,0,0.05); padding: 10px; border-radius: 8px;"><strong>Alternativas sugeridas para melhorar:</strong><ul style="margin: 0.5rem 0 0 1rem; padding: 0;">${report.alternatives.map(a => `<li style="margin-bottom: 4px;"><a href="${a.link.url}" target="_blank" rel="noopener">${a.title} - ${a.link.name}</a></li>`).join('')}</ul></div>`
+    : '';
   return `<div class="lesson-report">
     <strong>Relatório da aula</strong>
     <p>${report.accuracy}% de acerto · ${performanceBand(report.accuracy)} · confiança ${report.confidence}/3.</p>
     <p>${report.recommendation}</p>
+    ${alternativesMarkup}
     ${!hasDetailedCorrection
       ? "<p><strong>Corrija novamente esta aula para gerar o detalhamento das respostas.</strong></p>"
       : corrections.length
@@ -595,8 +609,114 @@ function renderWeek(){
   const authMessage = currentUser()
     ? "A IA usará os sete relatórios das aulas para criar a próxima semana."
     : "Conecte sua conta Google para a IA criar a próxima semana.";
-  document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">${w.assessmentMode?"CERTIFICAÇÃO DE NÍVEL":"RELATÓRIOS DA SEMANA"}</p><h2>${evaluated?"Nova semana gerada":unlocked?"Sete relatórios prontos":"Corrija as sete aulas"}</h2><p>${report?`${report.accuracy}% de desempenho geral · ${report.summary}`:unlocked?authMessage:`${readyReports} de 7 relatórios gerados.`}</p>${unlocked&&!evaluated?`<div class="actions"><button class="primary" id="evaluate">${currentUser()?w.assessmentMode?"Gerar próxima semana após certificação":"Gerar próxima semana com os relatórios":"Conectar Google para continuar"}</button></div>`:""}`;
-  if(unlocked&&!evaluated) document.querySelector("#evaluate").onclick=evaluateWeek;
+  if (unlocked && !evaluated) {
+    if (!state.finalTestCompleted && !state.finalTestPending) {
+        document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">${w.assessmentMode?"CERTIFICAÇÃO DE NÍVEL":"RELATÓRIOS DA SEMANA"}</p><h2>Teste Final da Semana</h2><p>Você completou as 7 aulas. Faça o teste final para avaliar seu progresso antes de gerar a próxima semana.</p><div class="actions"><button class="primary" id="startFinalTest">${currentUser()?"Iniciar Teste Final":"Conectar Google para continuar"}</button></div>`;
+        document.querySelector("#startFinalTest").onclick = startFinalTest;
+    } else if (state.finalTestPending) {
+        document.querySelector("#assessmentCard").innerHTML = renderFinalTestForm();
+        document.querySelector("#finalTestForm").onsubmit = submitFinalTest;
+        const cancelBtn = document.querySelector("#cancelFinalTest");
+        if (cancelBtn) cancelBtn.onclick = () => { state.finalTestPending = null; save(); renderWeek(); };
+    } else {
+        document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">${w.assessmentMode?"CERTIFICAÇÃO DE NÍVEL":"RELATÓRIOS DA SEMANA"}</p><h2>${evaluated?"Nova semana gerada":"Gerar Próxima Semana"}</h2><p>${report?`${report.accuracy}% de desempenho geral · ${report.summary}`:authMessage}</p><div class="actions"><button class="primary" id="evaluate">${currentUser()?w.assessmentMode?"Gerar próxima semana após certificação":"Gerar próxima semana com os relatórios":"Conectar Google para continuar"}</button></div>`;
+        document.querySelector("#evaluate").onclick=evaluateWeek;
+    }
+  } else {
+    document.querySelector("#assessmentCard").innerHTML=`<p class="eyebrow">${w.assessmentMode?"CERTIFICAÇÃO DE NÍVEL":"RELATÓRIOS DA SEMANA"}</p><h2>${evaluated?"Nova semana gerada":"Corrija as sete aulas"}</h2><p>${report?`${report.accuracy}% de desempenho geral · ${report.summary}`:`${readyReports} de 7 relatórios gerados.`}</p>`;
+  }
+}
+
+async function startFinalTest() {
+  if (!currentUser()) {
+    try {
+      await enterWithGoogle();
+    } catch (error) {
+      toast("Conecte sua conta Google para fazer o teste final.");
+      return;
+    }
+  }
+  const button = document.querySelector("#startFinalTest");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Gerando teste final...";
+  }
+  const weekNumber = state.week;
+  const report = buildWeeklyReport(weekNumber);
+  try {
+    const testData = await generateWeeklyFinalTest({
+      weekNumber: weekNumber,
+      level: state.currentLevel,
+      summary: adaptiveSummary(report)
+    });
+    state.finalTestPending = testData;
+    save();
+    renderWeek();
+  } catch(error) {
+    console.error(error);
+    toast("Erro ao gerar teste final. Tente novamente.");
+    if(button) {
+      button.disabled = false;
+      button.textContent = "Iniciar Teste Final";
+    }
+  }
+}
+
+function renderFinalTestForm() {
+  const t = state.finalTestPending;
+  if (!t || !t.questions) return "";
+  return `<form id="finalTestForm" class="exercise-panel">
+    <h3>${t.title || "Teste Final da Semana"}</h3>
+    ${t.questions.map((q, i) => `<div class="question" style="margin-top: 1rem;"><span class="question-skill">${skillLabels[q.skill] || q.skill}</span><p>${i+1}. ${q.text}</p>${q.options.map((o, j) => `<label class="option" style="display:block;"><input type="radio" name="ftq${i}" value="${j}"> ${o}</label>`).join("")}</div>`).join("")}
+    <div class="productive-exercise" style="margin-top: 1rem;">
+      <span class="question-skill">Writing</span>
+      <p><strong>${t.writingPrompt || "Escreva sobre o que você aprendeu nesta semana."}</strong></p>
+      <textarea id="finalTestWriting" rows="5" minlength="10" placeholder="Escreva sua resposta em inglês..." style="width:100%; border-radius: 4px; padding: 8px;"></textarea>
+    </div>
+    <div class="actions" style="margin-top: 1rem;"><button type="submit" class="primary">Concluir Teste Final</button><button type="button" class="secondary" id="cancelFinalTest">Cancelar</button></div>
+  </form>`;
+}
+
+async function submitFinalTest(e) {
+  e.preventDefault();
+  const t = state.finalTestPending;
+  const data = new FormData(e.target);
+  const ans = t.questions.map((_, i) => Number(data.get(`ftq${i}`)));
+  const writing = document.querySelector("#finalTestWriting").value.trim();
+  
+  if (ans.some(Number.isNaN)) {
+    toast("Responda todas as questões objetivas.");
+    return;
+  }
+  if (writing.length < 10) {
+    toast("Complete a resposta de escrita antes de concluir.");
+    return;
+  }
+
+  const submitButton = e.submitter || e.target.querySelector('button[type="submit"]');
+  submitButton.disabled = true;
+  submitButton.textContent = "Avaliando...";
+
+  let correctCount = 0;
+  t.questions.forEach((q, i) => {
+    if (ans[i] === q.answer) correctCount++;
+  });
+  
+  const accuracy = percent(correctCount, t.questions.length);
+
+  state.weeklyFinalTests[state.week] = {
+    test: t,
+    answers: ans,
+    accuracy,
+    writing,
+    completedAt: new Date().toISOString()
+  };
+
+  state.finalTestCompleted = true;
+  state.finalTestPending = null;
+  save();
+  renderWeek();
+  toast(`Teste final concluído! Você acertou ${correctCount} de ${t.questions.length}.`);
 }
 
 function buildWeeklyReport(weekNumber) {
@@ -678,6 +798,10 @@ function adaptiveSummary(report) {
     recentVideoIds,
     weakestSkill: report.weakestSkill,
     strongestSkill: report.strongestSkill,
+    finalTestResult: state.weeklyFinalTests[report.week] ? {
+      accuracy: state.weeklyFinalTests[report.week].accuracy,
+      writing: state.weeklyFinalTests[report.week].writing
+    } : null,
     recentLessonReports: weekAt(report.week).lessons.map((lessonItem) => {
       const item = state.lessonReports[key(report.week, lessonItem.day)];
       return {
@@ -939,6 +1063,8 @@ async function evaluateWeek() {
     delete state.generationDrafts[nextWeek];
     state.week = nextWeek;
     state.day = 1;
+    state.finalTestCompleted = false;
+    state.finalTestPending = null;
     save();
     renderAll();
     switchView("progresso");
